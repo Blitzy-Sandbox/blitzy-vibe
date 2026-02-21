@@ -49,5 +49,5 @@ class TestResolveConfigFile:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         assert VIBE_HOME.path != tmp_path
-        monkeypatch.setenv("VIBE_HOME", str(tmp_path))
+        monkeypatch.setenv("BLITZY_HOME", str(tmp_path))
         assert VIBE_HOME.path == tmp_path
