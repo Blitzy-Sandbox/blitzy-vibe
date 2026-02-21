@@ -399,7 +399,7 @@ class VibeConfig(BaseSettings):
     )
 
     model_config = SettingsConfigDict(
-        env_prefix="VIBE_", case_sensitive=False, extra="ignore"
+        env_prefix="BLITZY_", case_sensitive=False, extra="ignore"
     )
 
     @property
@@ -449,7 +449,7 @@ class VibeConfig(BaseSettings):
 
         Note: dotenv_settings is intentionally excluded. API keys and other
         non-config environment variables are stored in .env but loaded manually
-        into os.environ for use by providers. Only VIBE_* prefixed environment
+        into os.environ for use by providers. Only BLITZY_* prefixed environment
         variables (via env_settings) and TOML config are used for Pydantic settings.
         """
         return (
