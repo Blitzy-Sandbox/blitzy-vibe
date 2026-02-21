@@ -44,7 +44,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='vibe-acp',
+    name='blitzy-acp',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
