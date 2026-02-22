@@ -23,7 +23,7 @@ def ensure_public_remote() -> None:
     result = run_git_command("remote", "-v", capture_output=True, check=False)
     remotes = result.stdout
 
-    public_remote_url = "git@github.com:mistralai/mistral-vibe.git"
+    public_remote_url = "git@github.com:blitzy/blitzy-agent.git"
     if public_remote_url in remotes:
         print("Public remote already exists with correct URL")
         return
