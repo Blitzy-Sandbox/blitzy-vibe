@@ -12,7 +12,7 @@ from vibe.cli.textual_ui.widgets.no_markup_static import NoMarkupStatic
 from vibe.setup.onboarding.base import OnboardingScreen
 
 WELCOME_PREFIX = "Welcome to "
-WELCOME_HIGHLIGHT = "Mistral Vibe"
+WELCOME_HIGHLIGHT = "Blitzy Agent"
 WELCOME_SUFFIX = " - Let's get you started!"
 WELCOME_TEXT = WELCOME_PREFIX + WELCOME_HIGHLIGHT + WELCOME_SUFFIX
 
