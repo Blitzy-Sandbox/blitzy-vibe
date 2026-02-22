@@ -1221,7 +1221,7 @@ class VibeApp(App):  # noqa: PLR0904
             )
             return
 
-        message = f"{update_message_prefix}\nPlease update mistral-vibe with your package manager"
+        message = f"{update_message_prefix}\nPlease update blitzy-agent with your package manager"
 
         self.notify(
             message, title="Update available", severity="information", timeout=10
@@ -1244,12 +1244,12 @@ def _print_session_resume_message(session_id: str | None) -> None:
         return
 
     print()
-    print("To continue this session, run: vibe --continue")
-    print(f"Or: vibe --resume {session_id}")
+    print("To continue this session, run: blitzy --continue")
+    print(f"Or: blitzy --resume {session_id}")
 
 
 def run_textual_ui(agent_loop: AgentLoop, initial_prompt: str | None = None) -> None:
-    update_notifier = PyPIUpdateGateway(project_name="mistral-vibe")
+    update_notifier = PyPIUpdateGateway(project_name="blitzy-agent")
     update_cache_repository = FileSystemUpdateCacheRepository()
     app = VibeApp(
         agent_loop=agent_loop,
