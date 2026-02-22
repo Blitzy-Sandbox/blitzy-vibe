@@ -18,7 +18,7 @@ from vibe.setup.trusted_folders.trust_folder_dialog import (
 
 
 def parse_arguments() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run the Mistral Vibe interactive CLI")
+    parser = argparse.ArgumentParser(description="Run the Blitzy Agent interactive CLI")
     parser.add_argument(
         "-v", "--version", action="version", version=f"%(prog)s {__version__}"
     )
@@ -74,7 +74,7 @@ def parse_arguments() -> argparse.Namespace:
         metavar="NAME",
         default=BuiltinAgentName.DEFAULT,
         help="Agent to use (builtin: default, plan, accept-edits, auto-approve, "
-        "or custom from ~/.vibe/agents/NAME.toml)",
+        "or custom from ~/.blitzy/agents/NAME.toml)",
     )
     parser.add_argument("--setup", action="store_true", help="Setup API key and exit")
     parser.add_argument(
@@ -106,7 +106,7 @@ def check_and_resolve_trusted_folder() -> None:
     except FileNotFoundError:
         rprint(
             "[red]Error: Current working directory no longer exists.[/]\n"
-            "[yellow]The directory you started vibe from has been deleted. "
+            "[yellow]The directory you started blitzy from has been deleted. "
             "Please change to an existing directory and try again, "
             "or use --workdir to specify a working directory.[/]"
         )
