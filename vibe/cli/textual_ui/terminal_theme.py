@@ -252,12 +252,12 @@ def capture_terminal_theme() -> Theme | None:
 
     return Theme(
         name=TERMINAL_THEME_NAME,
-        primary=colors.blue or fg,
+        primary=colors.blue or "#7C5DF5",
         secondary=colors.cyan or fg,
         warning=colors.yellow or fg,
         error=colors.red or fg,
         success=colors.green or fg,
-        accent=colors.magenta or fg,
+        accent=colors.magenta or "#5B39F3",
         foreground=fg,
         background=bg,
         surface=surface,
