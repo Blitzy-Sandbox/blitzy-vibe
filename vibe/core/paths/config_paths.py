@@ -23,10 +23,10 @@ def _resolve_config_path(basename: str, type: Literal["file", "dir"]) -> Path:
     if not is_folder_trusted:
         return VIBE_HOME.path / basename
     if type == "file":
-        if (candidate := cwd / ".vibe" / basename).is_file():
+        if (candidate := cwd / ".blitzy" / basename).is_file():
             return candidate
     elif type == "dir":
-        if (candidate := cwd / ".vibe" / basename).is_dir():
+        if (candidate := cwd / ".blitzy" / basename).is_dir():
             return candidate
     return VIBE_HOME.path / basename
 
@@ -34,7 +34,7 @@ def _resolve_config_path(basename: str, type: Literal["file", "dir"]) -> Path:
 def resolve_local_tools_dir(dir: Path) -> Path | None:
     if not trusted_folders_manager.is_trusted(dir):
         return None
-    if (candidate := dir / ".vibe" / "tools").is_dir():
+    if (candidate := dir / ".blitzy" / "tools").is_dir():
         return candidate
     return None
 
@@ -42,7 +42,7 @@ def resolve_local_tools_dir(dir: Path) -> Path | None:
 def resolve_local_skills_dir(dir: Path) -> Path | None:
     if not trusted_folders_manager.is_trusted(dir):
         return None
-    if (candidate := dir / ".vibe" / "skills").is_dir():
+    if (candidate := dir / ".blitzy" / "skills").is_dir():
         return candidate
     return None
 
@@ -50,7 +50,7 @@ def resolve_local_skills_dir(dir: Path) -> Path | None:
 def resolve_local_agents_dir(dir: Path) -> Path | None:
     if not trusted_folders_manager.is_trusted(dir):
         return None
-    if (candidate := dir / ".vibe" / "agents").is_dir():
+    if (candidate := dir / ".blitzy" / "agents").is_dir():
         return candidate
     return None
 
