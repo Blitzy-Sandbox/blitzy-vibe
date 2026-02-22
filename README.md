@@ -29,7 +29,7 @@ Blitzy Agent is a command-line coding assistant powered by Mistral's models. It 
 **Linux and macOS**
 
 ```bash
-curl -LsSf https://mistral.ai/vibe/install.sh | bash
+curl -LsSf https://blitzy.com/agent/install.sh | bash
 ```
 
 **Windows**
