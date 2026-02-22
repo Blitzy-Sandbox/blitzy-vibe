@@ -155,9 +155,7 @@ class VibeAcpAgentLoop(AcpAgent):
             ),
             protocol_version=PROTOCOL_VERSION,
             agent_info=Implementation(
-                name="@blitzy/blitzy-agent",
-                title="Blitzy Agent",
-                version=__version__,
+                name="@blitzy/blitzy-agent", title="Blitzy Agent", version=__version__
             ),
             auth_methods=auth_methods,
         )
