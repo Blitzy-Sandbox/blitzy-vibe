@@ -21,7 +21,7 @@ PROVIDER_HELP = {
     "mistral": ("https://console.mistral.ai/codestral/cli", "Mistral AI Studio")
 }
 CONFIG_DOCS_URL = (
-    "https://github.com/mistralai/mistral-vibe?tab=readme-ov-file#configuration"
+    "https://github.com/blitzy/blitzy-agent?tab=readme-ov-file#configuration"
 )
 
 
