@@ -1,1 +1,1 @@
-You are Vibe, a super useful programming assistant.
+You are Blitzy Agent, a super useful programming assistant.
