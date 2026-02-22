@@ -32,7 +32,7 @@ def test_get_universal_system_prompt_includes_windows_prompt_on_windows(
         tool_manager, config, skill_manager, agent_manager
     )
 
-    assert "You are Vibe, a super useful programming assistant." in prompt
+    assert "You are Blitzy Agent, a super useful programming assistant." in prompt
     assert (
         "The operating system is Windows with shell `C:\\Windows\\System32\\cmd.exe`"
         in prompt

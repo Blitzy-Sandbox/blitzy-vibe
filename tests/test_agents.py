@@ -172,11 +172,11 @@ class TestAgentApplyToConfig:
     def test_custom_prompt_found_in_global_when_missing_from_project(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Regression test for https://github.com/mistralai/mistral-vibe/issues/288
+        """Regression test for https://github.com/blitzy/blitzy-agent/issues/288
 
         When a custom prompt .md file is absent from the project-local prompts
         directory, the system_prompt property should fall back to the global
-        ~/.vibe/prompts/ directory and load the file from there.
+        ~/.blitzy/prompts/ directory and load the file from there.
         """
         project_prompts = tmp_path / "project" / ".vibe" / "prompts"
         project_prompts.mkdir(parents=True)
