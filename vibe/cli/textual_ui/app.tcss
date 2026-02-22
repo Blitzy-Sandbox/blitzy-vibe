@@ -705,7 +705,7 @@ StatusMessage {
 WelcomeBanner {
     width: 100%;
     height: auto;
-    border: round $surface;
+    border: round $accent;
     border-title-align: center;
     text-align: center;
     content-align: center middle;
