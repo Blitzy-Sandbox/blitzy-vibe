@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
-# Mistral Vibe Installation Script
-# This script installs uv if not present and then installs mistral-vibe using uv
+# Blitzy Agent Installation Script
+# This script installs uv if not present and then installs blitzy-agent using uv
 
 set -euo pipefail
 
@@ -79,10 +79,10 @@ function install_uv() {
 }
 
 function install_vibe() {
-    info "Installing mistral-vibe from GitHub repository using uv..."
-    uv tool install mistral-vibe
+    info "Installing blitzy-agent from GitHub repository using uv..."
+    uv tool install blitzy-agent
 
-    success "Mistral Vibe installed successfully! (commands: vibe, vibe-acp)"
+    success "Blitzy Agent installed successfully! (commands: blitzy, blitzy-acp)"
 }
 
 function main() {
@@ -97,7 +97,7 @@ function main() {
     echo "██████████████████░░"
     echo "██████████████████░░"
     echo
-    echo "Starting Mistral Vibe installation..."
+    echo "Starting Blitzy Agent installation..."
     echo
 
     check_platform
@@ -110,16 +110,16 @@ function main() {
 
     install_vibe
 
-    if command -v vibe &> /dev/null; then
+    if command -v blitzy &> /dev/null; then
         success "Installation completed successfully!"
         echo
-        echo "You can now run vibe with:"
-        echo "  vibe"
+        echo "You can now run blitzy with:"
+        echo "  blitzy"
         echo
         echo "Or for ACP mode:"
-        echo "  vibe-acp"
+        echo "  blitzy-acp"
     else
-        error "Installation completed but 'vibe' command not found"
+        error "Installation completed but 'blitzy' command not found"
         error "Please check your installation and PATH settings"
         exit 1
     fi
