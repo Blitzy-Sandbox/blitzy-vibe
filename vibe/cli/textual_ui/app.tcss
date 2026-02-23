@@ -952,25 +952,6 @@ WelcomeBanner {
     margin-bottom: 1;
 }
 
-.plan-offer-message {
-    background: transparent;
-    border: none;
-    height: auto;
-    padding: 0;
-    margin-top: 0;
-    color: $foreground-muted;
-    text-style: dim;
-
-    Markdown > *:last-child {
-        margin-bottom: 0;
-        link-style: none;
-        link-color: $foreground-muted;
-        link-background-hover: transparent;
-        link-style-hover: underline;
-        link-color-hover: $warning;
-    }
-}
-
 Horizontal {
     width: 100%;
     height: auto;

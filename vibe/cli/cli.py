@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import signal
 import sys
 
 from rich import print as rprint
@@ -140,6 +141,9 @@ def run_cli(args: argparse.Namespace) -> None:
 
         stdin_prompt = get_prompt_from_stdin()
         if args.prompt is not None:
+            # Restore default SIGINT so Ctrl+C works in programmatic mode
+            # (entrypoint ignores SIGINT to avoid uv process-manager race).
+            signal.signal(signal.SIGINT, signal.SIG_DFL)
             programmatic_prompt = args.prompt or stdin_prompt
             if not programmatic_prompt:
                 print(

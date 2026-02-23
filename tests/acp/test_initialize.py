@@ -25,7 +25,7 @@ class TestACPInitialize:
             ),
         )
         assert response.agent_info == Implementation(
-            name="@blitzy/blitzy-agent", title="Blitzy Agent", version="2.0.2"
+            name="@blitzy/blitzy-agent", title="Blitzy Agent", version="0.1.0"
         )
 
         assert response.auth_methods == []
@@ -48,7 +48,7 @@ class TestACPInitialize:
             ),
         )
         assert response.agent_info == Implementation(
-            name="@blitzy/blitzy-agent", title="Blitzy Agent", version="2.0.2"
+            name="@blitzy/blitzy-agent", title="Blitzy Agent", version="0.1.0"
         )
 
         assert response.auth_methods is not None

@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator, Callable
 import json
+import logging
 import os
 import types
 from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple, Protocol, TypeVar
+
+logger = logging.getLogger(__name__)
 
 import httpx
 
@@ -88,12 +91,12 @@ class OpenAIAdapter(APIAdapter):
 
         if tools:
             payload["tools"] = [tool.model_dump(exclude_none=True) for tool in tools]
-        if tool_choice:
-            payload["tool_choice"] = (
-                tool_choice
-                if isinstance(tool_choice, str)
-                else tool_choice.model_dump()
-            )
+            if tool_choice:
+                payload["tool_choice"] = (
+                    tool_choice
+                    if isinstance(tool_choice, str)
+                    else tool_choice.model_dump()
+                )
         if max_tokens is not None:
             payload["max_tokens"] = max_tokens
 
@@ -144,15 +147,21 @@ class OpenAIAdapter(APIAdapter):
             model_name, converted_messages, temperature, tools, max_tokens, tool_choice
         )
 
+        if not provider.supports_tool_choice:
+            payload.pop("tool_choice", None)
+
         if enable_streaming:
             payload["stream"] = True
-            stream_options = {"include_usage": True}
-            if provider.name == "mistral":
-                stream_options["stream_tool_calls"] = True
-            payload["stream_options"] = stream_options
+            if provider.supports_stream_options:
+                stream_options = {"include_usage": True}
+                if provider.name == "mistral":
+                    stream_options["stream_tool_calls"] = True
+                payload["stream_options"] = stream_options
 
         headers = self.build_headers(api_key)
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+
+        logger.debug("Prepared request payload for provider %s: %s", provider.name, payload)
 
         return PreparedRequest(self.endpoint, headers, body)
 
@@ -393,6 +402,14 @@ class GenericBackend:
         async with client.stream(
             method="POST", url=url, content=data, headers=headers
         ) as response:
+            if response.is_error:
+                await response.aread()
+                logger.error(
+                    "Streaming request failed [%s %s]: %s",
+                    response.status_code,
+                    response.reason_phrase,
+                    response.text,
+                )
             response.raise_for_status()
             async for line in response.aiter_lines():
                 if line.strip() == "":

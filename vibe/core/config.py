@@ -147,6 +147,8 @@ class ProviderConfig(BaseModel):
     api_style: str = "openai"
     backend: Backend = Backend.GENERIC
     reasoning_field_name: str = "reasoning_content"
+    supports_stream_options: bool = True
+    supports_tool_choice: bool = True
 
 
 class _MCPBase(BaseModel):
@@ -271,6 +273,8 @@ DEFAULT_PROVIDERS = [
         name="llamacpp",
         api_base="http://127.0.0.1:8080/v1",
         api_key_env_var="",  # NOTE: if you wish to use --api-key in llama-server, change this value
+        supports_stream_options=False,
+        supports_tool_choice=False,
     ),
 ]
 

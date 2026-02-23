@@ -1,7 +1,7 @@
 id = "blitzy-agent"
 name = "Blitzy Agent"
 description = "Blitzy's open-source coding assistant"
-version = "2.0.2"
+version = "0.1.0"
 schema_version = 1
 authors = ["Blitzy"]
 repository = "https://github.com/blitzy/blitzy-agent"
@@ -11,25 +11,25 @@ name = "Blitzy Agent"
 icon = "./icons/blitzy_agent.svg"
 
 [agent_servers.blitzy-agent.targets.darwin-aarch64]
-archive = "https://github.com/blitzy/blitzy-agent/releases/download/v2.0.2/blitzy-acp-darwin-aarch64-2.0.2.zip"
+archive = "https://github.com/blitzy/blitzy-agent/releases/download/v0.1.0/blitzy-acp-darwin-aarch64-0.1.0.zip"
 cmd = "./blitzy-acp"
 
 [agent_servers.blitzy-agent.targets.darwin-x86_64]
-archive = "https://github.com/blitzy/blitzy-agent/releases/download/v2.0.2/blitzy-acp-darwin-x86_64-2.0.2.zip"
+archive = "https://github.com/blitzy/blitzy-agent/releases/download/v0.1.0/blitzy-acp-darwin-x86_64-0.1.0.zip"
 cmd = "./blitzy-acp"
 
 [agent_servers.blitzy-agent.targets.linux-aarch64]
-archive = "https://github.com/blitzy/blitzy-agent/releases/download/v2.0.2/blitzy-acp-linux-aarch64-2.0.2.zip"
+archive = "https://github.com/blitzy/blitzy-agent/releases/download/v0.1.0/blitzy-acp-linux-aarch64-0.1.0.zip"
 cmd = "./blitzy-acp"
 
 [agent_servers.blitzy-agent.targets.linux-x86_64]
-archive = "https://github.com/blitzy/blitzy-agent/releases/download/v2.0.2/blitzy-acp-linux-x86_64-2.0.2.zip"
+archive = "https://github.com/blitzy/blitzy-agent/releases/download/v0.1.0/blitzy-acp-linux-x86_64-0.1.0.zip"
 cmd = "./blitzy-acp"
 
 [agent_servers.blitzy-agent.targets.windows-aarch64]
-archive = "https://github.com/blitzy/blitzy-agent/releases/download/v2.0.2/blitzy-acp-windows-aarch64-2.0.2.zip"
+archive = "https://github.com/blitzy/blitzy-agent/releases/download/v0.1.0/blitzy-acp-windows-aarch64-0.1.0.zip"
 cmd = "./blitzy-acp.exe"
 
 [agent_servers.blitzy-agent.targets.windows-x86_64]
-archive = "https://github.com/blitzy/blitzy-agent/releases/download/v2.0.2/blitzy-acp-windows-x86_64-2.0.2.zip"
+archive = "https://github.com/blitzy/blitzy-agent/releases/download/v0.1.0/blitzy-acp-windows-x86_64-0.1.0.zip"
 cmd = "./blitzy-acp.exe"

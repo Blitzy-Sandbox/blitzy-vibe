@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import os
 from pathlib import Path
+import signal
 import sys
 
 from rich import print as rprint
@@ -135,6 +136,14 @@ def check_and_resolve_trusted_folder() -> None:
 
 
 def main() -> None:
+    # Ignore SIGINT at the process level so that `uv run` (or any parent process
+    # manager) doesn't race against a dying child when Ctrl+C is pressed.
+    # Textual handles Ctrl+C through terminal raw-mode keyboard input, not via
+    # SIGINT, so interactive mode is unaffected.  For programmatic mode (-p),
+    # the KeyboardInterrupt handler in run_cli still works because we restore
+    # the default SIGINT disposition there.
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+
     args = parse_arguments()
 
     if args.workdir:
