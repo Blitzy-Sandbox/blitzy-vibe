@@ -16,7 +16,7 @@ from vibe.cli.textual_ui.widgets.spinner import SpinnerMixin, SpinnerType
 
 
 class LoadingWidget(SpinnerMixin, Static):
-    TARGET_COLORS = ("#FFD800", "#FFAF00", "#FF8205", "#FA500F", "#E10500")
+    TARGET_COLORS = ("#7C5DF5", "#6B4AF0", "#5B39F3", "#4A2DD4", "#3A1FB5")
     SPINNER_TYPE = SpinnerType.BRAILLE
 
     EASTER_EGGS: ClassVar[list[str]] = [

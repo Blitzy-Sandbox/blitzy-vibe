@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from tests.cli.plan_offer.adapters.fake_whoami_gateway import FakeWhoAmIGateway
+
 from vibe.cli.textual_ui.app import VibeApp
 from vibe.cli.textual_ui.widgets.messages import AssistantMessage, UserMessage
 from vibe.cli.textual_ui.widgets.tools import ToolCallMessage, ToolResultMessage
@@ -49,7 +49,7 @@ async def test_ui_displays_messages_when_resuming_session(
 
     agent_loop.messages.extend([user_msg, assistant_msg, tool_result_msg])
 
-    app = VibeApp(agent_loop=agent_loop, plan_offer_gateway=FakeWhoAmIGateway())
+    app = VibeApp(agent_loop=agent_loop, )
 
     async with app.run_test() as pilot:
         # Wait for the app to initialize and rebuild history
@@ -88,7 +88,7 @@ async def test_ui_does_not_display_messages_when_only_system_messages_exist(
     system_msg = LLMMessage(role=Role.system, content="System prompt")
     agent_loop.messages.append(system_msg)
 
-    app = VibeApp(agent_loop=agent_loop, plan_offer_gateway=FakeWhoAmIGateway())
+    app = VibeApp(agent_loop=agent_loop, )
 
     async with app.run_test() as pilot:
         await pilot.pause(0.5)
@@ -118,7 +118,7 @@ async def test_ui_displays_multiple_user_assistant_turns(
 
     agent_loop.messages.extend(messages)
 
-    app = VibeApp(agent_loop=agent_loop, plan_offer_gateway=FakeWhoAmIGateway())
+    app = VibeApp(agent_loop=agent_loop, )
 
     async with app.run_test() as pilot:
         await pilot.pause(0.5)

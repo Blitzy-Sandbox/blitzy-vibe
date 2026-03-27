@@ -44,8 +44,8 @@ class LineAnimationState:
 
 class WelcomeBanner(Static):
     FLASH_COLOR = "#FFFFFF"
-    TARGET_COLORS = ("#FFD800", "#FFAF00", "#FF8205", "#FA500F", "#E10500")
-    BORDER_TARGET_COLOR = "#b05800"
+    TARGET_COLORS = ("#7C5DF5", "#6B4AF0", "#5B39F3", "#4A2DD4", "#3A1FB5")
+    BORDER_TARGET_COLOR = "#5B39F3"
 
     LINE_ANIMATION_DURATION_MS = 200
     LINE_STAGGER_MS = 280
@@ -94,7 +94,7 @@ class WelcomeBanner(Static):
 
     def _initialize_static_line_suffixes(self) -> None:
         self._static_line1_suffix = (
-            f"{self.LOGO_TEXT_GAP}[b]Mistral Vibe v{__version__}[/]"
+            f"{self.LOGO_TEXT_GAP}[b]Blitzy Agent v{__version__}[/]"
         )
         self._static_line2_suffix = (
             f"{self.LOGO_TEXT_GAP}[dim]{self.config.active_model}[/]"
@@ -274,10 +274,10 @@ class WelcomeBanner(Static):
         S = self.SPACE
 
         patterns = [
-            f"{S}[{color}]{B}[/]{S}{S}{S}[{color}]{B}[/]{S}{self._static_line1_suffix}",
-            f"{S}[{color}]{B}{B}[/]{S}[{color}]{B}{B}[/]{S}{self._static_line2_suffix}",
-            f"{S}[{color}]{B}{B}{B}{B}{B}[/]{S}{self._static_line3_suffix}",
-            f"{S}[{color}]{B}[/]{S}[{color}]{B}[/]{S}[{color}]{B}[/]{S}",
-            f"[{color}]{B}{B}{B}[/]{S}[{color}]{B}{B}{B}[/]{self._static_line5_suffix}",
+            f"{S}[{color}]{B}{B}{B}{B}{B}[/]{S}{self._static_line1_suffix}",
+            f"{S}[{color}]{B}[/]{S}{S}{S}[{color}]{B}[/]{S}{self._static_line2_suffix}",
+            f"{S}[{color}]{B}{B}{B}{B}[/]{S}{S}{self._static_line3_suffix}",
+            f"{S}[{color}]{B}[/]{S}{S}{S}[{color}]{B}[/]{S}",
+            f"{S}[{color}]{B}{B}{B}{B}{B}[/]{S}{self._static_line5_suffix}",
         ]
         return patterns[line_idx]

@@ -1,16 +1,16 @@
 [project]
-name = "mistral-vibe"
-version = "2.0.2"
-description = "Minimal CLI coding agent by Mistral"
+name = "blitzy-agent"
+version = "0.1.0"
+description = "Minimal CLI coding agent by Blitzy"
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "Apache-2.0" }
-authors = [{ name = "Mistral AI" }]
+authors = [{ name = "Blitzy" }]
 keywords = [
     "ai",
     "cli",
     "coding-assistant",
-    "mistral",
+    "blitzy",
     "llm",
     "developer-tools",
 ]
@@ -49,10 +49,10 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/mistralai/mistral-vibe"
-Repository = "https://github.com/mistralai/mistral-vibe"
-Issues = "https://github.com/mistralai/mistral-vibe/issues"
-Documentation = "https://github.com/mistralai/mistral-vibe#readme"
+Homepage = "https://github.com/blitzy/blitzy-agent"
+Repository = "https://github.com/blitzy/blitzy-agent"
+Issues = "https://github.com/blitzy/blitzy-agent/issues"
+Documentation = "https://github.com/blitzy/blitzy-agent#readme"
 
 
 [build-system]
@@ -67,8 +67,8 @@ include = ["vibe/"]
 
 
 [project.scripts]
-vibe = "vibe.cli.entrypoint:main"
-vibe-acp = "vibe.acp.entrypoint:main"
+blitzy = "vibe.cli.entrypoint:main"
+blitzy-acp = "vibe.acp.entrypoint:main"
 
 
 [tool.uv]

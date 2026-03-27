@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import signal
 import sys
 
 from rich import print as rprint
@@ -67,7 +68,7 @@ def bootstrap_config_files() -> None:
     if not HISTORY_FILE.path.exists():
         try:
             HISTORY_FILE.path.parent.mkdir(parents=True, exist_ok=True)
-            HISTORY_FILE.path.write_text("Hello Vibe!\n", "utf-8")
+            HISTORY_FILE.path.write_text("Hello Blitzy!\n", "utf-8")
         except Exception as e:
             rprint(f"[yellow]Could not create history file: {e}[/]")
 
@@ -140,6 +141,9 @@ def run_cli(args: argparse.Namespace) -> None:
 
         stdin_prompt = get_prompt_from_stdin()
         if args.prompt is not None:
+            # Restore default SIGINT so Ctrl+C works in programmatic mode
+            # (entrypoint ignores SIGINT to avoid uv process-manager race).
+            signal.signal(signal.SIGINT, signal.SIG_DFL)
             programmatic_prompt = args.prompt or stdin_prompt
             if not programmatic_prompt:
                 print(

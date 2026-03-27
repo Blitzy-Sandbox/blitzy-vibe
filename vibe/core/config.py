@@ -147,6 +147,8 @@ class ProviderConfig(BaseModel):
     api_style: str = "openai"
     backend: Backend = Backend.GENERIC
     reasoning_field_name: str = "reasoning_content"
+    supports_stream_options: bool = True
+    supports_tool_choice: bool = True
 
 
 class _MCPBase(BaseModel):
@@ -271,6 +273,8 @@ DEFAULT_PROVIDERS = [
         name="llamacpp",
         api_base="http://127.0.0.1:8080/v1",
         api_key_env_var="",  # NOTE: if you wish to use --api-key in llama-server, change this value
+        supports_stream_options=False,
+        supports_tool_choice=False,
     ),
 ]
 
@@ -399,7 +403,7 @@ class VibeConfig(BaseSettings):
     )
 
     model_config = SettingsConfigDict(
-        env_prefix="VIBE_", case_sensitive=False, extra="ignore"
+        env_prefix="BLITZY_", case_sensitive=False, extra="ignore"
     )
 
     @property
@@ -449,7 +453,7 @@ class VibeConfig(BaseSettings):
 
         Note: dotenv_settings is intentionally excluded. API keys and other
         non-config environment variables are stored in .env but loaded manually
-        into os.environ for use by providers. Only VIBE_* prefixed environment
+        into os.environ for use by providers. Only BLITZY_* prefixed environment
         variables (via env_settings) and TOML config are used for Pydantic settings.
         """
         return (

@@ -64,12 +64,12 @@ class BackendError(RuntimeError):
         parts = [
             f"LLM backend error [{self.provider}]",
             f"  status: {status_label}",
+            f"  provider_message: {self.parsed_error or 'N/A'}",
+            f"  body_excerpt: {self._excerpt(self.body_text)}",
             f"  reason: {self.reason or 'N/A'}",
             f"  request_id: {rid or 'N/A'}",
             f"  endpoint: {self.endpoint}",
             f"  model: {self.model}",
-            f"  provider_message: {self.parsed_error or 'N/A'}",
-            f"  body_excerpt: {self._excerpt(self.body_text)}",
             f"  payload_summary: {self.payload_summary.model_dump_json(exclude_none=True)}",
         ]
         return "\n".join(parts)

@@ -33,7 +33,7 @@
     }
 
     .terminal-r1 { fill: #c5c8c6 }
-.terminal-r2 { fill: #3c3836 }
+.terminal-r2 { fill: #f9bd2f }
 .terminal-r3 { fill: #fbf1c7 }
 .terminal-r4 { fill: #fd8019 }
 .terminal-r5 { fill: #85a598;font-weight: bold }
@@ -195,7 +195,7 @@
 </text><text class="terminal-r7" x="719.8" y="630" textLength="12.2" clip-path="url(#terminal-line-25)">▌</text><text class="terminal-r1" x="1464" y="630" textLength="12.2" clip-path="url(#terminal-line-25)">
 </text><text class="terminal-r7" x="719.8" y="654.4" textLength="12.2" clip-path="url(#terminal-line-26)">▌</text><text class="terminal-r8" x="744.2" y="654.4" textLength="195.2" clip-path="url(#terminal-line-26)">Update&#160;available</text><text class="terminal-r1" x="1464" y="654.4" textLength="12.2" clip-path="url(#terminal-line-26)">
 </text><text class="terminal-r7" x="719.8" y="678.8" textLength="12.2" clip-path="url(#terminal-line-27)">▌</text><text class="terminal-r3" x="744.2" y="678.8" textLength="207.4" clip-path="url(#terminal-line-27)">1.0.4&#160;=&gt;&#160;1000.2.0</text><text class="terminal-r1" x="1464" y="678.8" textLength="12.2" clip-path="url(#terminal-line-27)">
-</text><text class="terminal-r7" x="719.8" y="703.2" textLength="12.2" clip-path="url(#terminal-line-28)">▌</text><text class="terminal-r3" x="744.2" y="703.2" textLength="634.4" clip-path="url(#terminal-line-28)">Please&#160;update&#160;mistral-vibe&#160;with&#160;your&#160;package&#160;manager</text><text class="terminal-r1" x="1464" y="703.2" textLength="12.2" clip-path="url(#terminal-line-28)">
+</text><text class="terminal-r7" x="719.8" y="703.2" textLength="12.2" clip-path="url(#terminal-line-28)">▌</text><text class="terminal-r3" x="744.2" y="703.2" textLength="634.4" clip-path="url(#terminal-line-28)">Please&#160;update&#160;blitzy-agent&#160;with&#160;your&#160;package&#160;manager</text><text class="terminal-r1" x="1464" y="703.2" textLength="12.2" clip-path="url(#terminal-line-28)">
 </text><text class="terminal-r7" x="719.8" y="727.6" textLength="12.2" clip-path="url(#terminal-line-29)">▌</text><text class="terminal-r9" x="1439.6" y="727.6" textLength="24.4" clip-path="url(#terminal-line-29)">e)</text><text class="terminal-r1" x="1464" y="727.6" textLength="12.2" clip-path="url(#terminal-line-29)">
 </text><text class="terminal-r1" x="1464" y="752" textLength="12.2" clip-path="url(#terminal-line-30)">
 </text><text class="terminal-r10" x="0" y="776.4" textLength="1464" clip-path="url(#terminal-line-31)">────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</text><text class="terminal-r1" x="1464" y="776.4" textLength="12.2" clip-path="url(#terminal-line-31)">
