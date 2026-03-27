@@ -121,7 +121,7 @@ class BackendErrorBuilder:
     ) -> BackendError:
         try:
             body_text = response.text
-        except Exception:  # On streaming responses, we can't read the body
+        except httpx.StreamError:  # On streaming responses, we can't read the body
             body_text = None
 
         return BackendError(
