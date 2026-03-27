@@ -5,6 +5,7 @@ from collections.abc import AsyncGenerator
 from enum import StrEnum, auto
 from pathlib import Path
 import shutil
+import subprocess
 from typing import TYPE_CHECKING, ClassVar
 
 from pydantic import BaseModel, Field
@@ -251,7 +252,7 @@ class Grep(
 
         except ToolError:
             raise
-        except Exception as exc:
+        except (OSError, subprocess.SubprocessError) as exc:
             raise ToolError(f"Error running grep: {exc}") from exc
 
     def _parse_output(self, stdout: str, max_matches: int) -> GrepResult:
