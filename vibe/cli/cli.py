@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import signal
 import sys
 
@@ -62,14 +63,14 @@ def bootstrap_config_files() -> None:
     if not CONFIG_FILE.path.exists():
         try:
             VibeConfig.save_updates(VibeConfig.create_default())
-        except Exception as e:
+        except OSError as e:
             rprint(f"[yellow]Could not create default config file: {e}[/]")
 
     if not HISTORY_FILE.path.exists():
         try:
             HISTORY_FILE.path.parent.mkdir(parents=True, exist_ok=True)
             HISTORY_FILE.path.write_text("Hello Blitzy!\n", "utf-8")
-        except Exception as e:
+        except OSError as e:
             rprint(f"[yellow]Could not create history file: {e}[/]")
 
 
@@ -109,7 +110,7 @@ def load_session(
     try:
         loaded_messages, _ = SessionLoader.load_session(session_to_load)
         return loaded_messages
-    except Exception as e:
+    except (OSError, json.JSONDecodeError) as e:
         rprint(f"[red]Failed to load session: {e}[/]")
         sys.exit(1)
 
