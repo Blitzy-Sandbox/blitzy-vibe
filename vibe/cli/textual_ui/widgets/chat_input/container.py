@@ -6,6 +6,7 @@ from typing import Any
 
 from textual.app import ComposeResult
 from textual.containers import Vertical
+from textual.css.query import NoMatches
 from textual.message import Message
 
 from vibe.cli.autocompletion.path_completion import PathCompletionController
@@ -167,7 +168,7 @@ class ChatInputContainer(Vertical):
 
         try:
             input_box = self.get_widget_by_id(self.ID_INPUT_BOX)
-        except Exception:
+        except NoMatches:
             return
 
         for border_class in SAFETY_BORDER_CLASSES.values():
