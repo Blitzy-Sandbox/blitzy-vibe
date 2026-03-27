@@ -118,7 +118,7 @@ def test_copy_selection_to_clipboard_tries_all(
     )
     mock_app.query.return_value = [widget]
 
-    fn_1 = MagicMock(side_effect=Exception("failed"))
+    fn_1 = MagicMock(side_effect=OSError("failed"))
     fn_2 = MagicMock()
     fn_3 = MagicMock()
     mock_get_copy_fns.return_value = [fn_1, fn_2, fn_3]
@@ -145,9 +145,9 @@ def test_copy_selection_to_clipboard_all_methods_fail(
     )
     mock_app.query.return_value = [widget]
 
-    failing_fn1 = MagicMock(side_effect=Exception("failed 1"))
-    failing_fn2 = MagicMock(side_effect=Exception("failed 2"))
-    failing_fn3 = MagicMock(side_effect=Exception("failed 3"))
+    failing_fn1 = MagicMock(side_effect=OSError("failed 1"))
+    failing_fn2 = MagicMock(side_effect=OSError("failed 2"))
+    failing_fn3 = MagicMock(side_effect=OSError("failed 3"))
     mock_get_copy_fns.return_value = [failing_fn1, failing_fn2, failing_fn3]
 
     copy_selection_to_clipboard(mock_app)
