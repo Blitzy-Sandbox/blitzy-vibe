@@ -114,7 +114,7 @@ class SessionLoader:
         try:
             with messages_filepath.open("r", encoding="utf-8", errors="ignore") as f:
                 content = f.readlines()
-        except Exception as e:
+        except OSError as e:
             raise ValueError(
                 f"Error reading session messages at {filepath}: {e}"
             ) from e
