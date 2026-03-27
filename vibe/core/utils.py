@@ -185,7 +185,7 @@ def async_retry[T, **P](
             for attempt in range(tries):
                 try:
                     return await func(*args, **kwargs)
-                except Exception as e:
+                except (OSError, httpx.HTTPError) as e:
                     last_exc = e
                     if attempt < tries - 1 and is_retryable(e):
                         current_delay = (delay_seconds * (backoff_factor**attempt)) + (
@@ -233,7 +233,7 @@ def async_generator_retry[T, **P](
                     async for item in func(*args, **kwargs):
                         yield item
                     return
-                except Exception as e:
+                except (OSError, httpx.HTTPError) as e:
                     last_exc = e
                     if attempt < tries - 1 and is_retryable(e):
                         current_delay = (delay_seconds * (backoff_factor**attempt)) + (
