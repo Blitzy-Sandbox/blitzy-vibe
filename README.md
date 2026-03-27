@@ -84,6 +84,13 @@ pip install blitzy-agent
   - [Custom Blitzy Home Directory](#custom-blitzy-home-directory)
 - [Editors/IDEs](#editorsides)
 - [Resources](#resources)
+- [Architecture](#architecture)
+  - [Package Structure](#package-structure)
+  - [High-Level Architecture](#high-level-architecture)
+  - [Design Patterns](#design-patterns)
+- [For Contributors](#for-contributors)
+  - [Module Orientation](#module-orientation)
+  - [Suggested Next Tasks](#suggested-next-tasks)
 - [License](#license)
 
 ## Features
@@ -594,6 +601,96 @@ Blitzy Agent can be used in text editors and IDEs that support [Agent Client Pro
 
 - [CHANGELOG](CHANGELOG.md) - See what's new in each version
 - [CONTRIBUTING](CONTRIBUTING.md) - Guidelines for feedback and bug reports
+
+## Architecture
+
+This section provides an overview of the internal architecture for developers and contributors working on Blitzy Agent.
+
+### Package Structure
+
+The codebase is organized into four top-level packages within the `vibe/` namespace:
+
+- **`vibe/core/`** — Core agent engine: agent loop orchestration, LLM backend abstraction, tool framework, configuration management, session handling, and system prompt generation.
+- **`vibe/cli/`** — Command-line interface: Textual-based interactive UI, slash command handling, autocompletion, clipboard integration, and update notifications.
+- **`vibe/acp/`** — Agent Client Protocol layer: ACP-compliant agent loop, entrypoint, and tool wrappers for IDE integration.
+- **`vibe/setup/`** — First-run onboarding: API key setup, theme selection, and trusted folder management.
+
+### High-Level Architecture
+
+The following diagram shows the major components and their relationships after the structural refactoring:
+
+```mermaid
+---
+title: Blitzy Agent — High-Level Component Architecture
+---
+graph TD
+    subgraph CLI["vibe/cli — Command-Line Interface"]
+        APP["VibeApp"]
+        CH["CommandHandler"]
+        AH["ApprovalHandler"]
+        HH["HistoryHandler"]
+        APP -->|"delegates"| CH
+        APP -->|"delegates"| AH
+        APP -->|"delegates"| HH
+    end
+
+    subgraph Core["vibe/core — Agent Engine"]
+        AL["AgentLoop"]
+        TE["ToolExecutor"]
+        TR["TurnRunner"]
+        PR["protocols.py<br/>(ToolLike, ConfigLike,<br/>BackendLike, ToolManagerLike)"]
+        CFG["VibeConfig"]
+        TM["ToolManager"]
+        AL -->|"delegates"| TE
+        AL -->|"delegates"| TR
+        PR -.->|"type contracts"| AL
+        PR -.->|"type contracts"| CFG
+        PR -.->|"type contracts"| TM
+    end
+
+    subgraph ACP["vibe/acp — Agent Client Protocol"]
+        ACPAL["VibeAcpAgentLoop"]
+    end
+
+    CLI --> Core
+    ACP --> Core
+```
+
+### Design Patterns
+
+**Composition over Inheritance** — Extracted handler classes are injected into parent classes via constructor injection. The parent class retains thin one-liner delegation methods that forward calls to the composed handler, keeping public APIs stable while reducing class complexity.
+
+**Protocol-Based Decoupling** — The `vibe/core/protocols.py` module defines `typing.Protocol` classes (`BackendLike`, `ToolLike`, `ConfigLike`, `ToolManagerLike`) that break circular import chains between core modules. Protocol definitions use only standard library imports, enabling clean dependency boundaries.
+
+**God Class Decomposition** — Large monolithic classes have been decomposed into focused handler modules:
+
+| Original Class | Extracted Handlers | Location |
+|---|---|---|
+| `AgentLoop` | `ToolExecutor`, `TurnRunner` | `vibe/core/tool_executor.py`, `vibe/core/turn_runner.py` |
+| `VibeApp` | `CommandHandler`, `ApprovalHandler`, `HistoryHandler` | `vibe/cli/textual_ui/handlers/` |
+
+## For Contributors
+
+For detailed development setup, testing, and contribution guidelines, see [CONTRIBUTING.md](CONTRIBUTING.md).
+
+### Module Orientation
+
+After the structural refactoring, the key entry points for understanding the codebase are:
+
+- **Agent Loop** (`vibe/core/agent_loop.py`) — Orchestrates LLM conversation turns. Delegates tool execution to `ToolExecutor` and turn management to `TurnRunner`.
+- **Tool Framework** (`vibe/core/tools/`) — `BaseTool` defines the tool interface; `ToolManager` handles discovery, registration, and caching.
+- **Configuration** (`vibe/core/config.py`) — `VibeConfig` manages all settings loaded from `config.toml` with Pydantic validation.
+- **Interactive UI** (`vibe/cli/textual_ui/app.py`) — `VibeApp` is the Textual application. Slash commands, tool approvals, and history are handled by dedicated handler classes in `vibe/cli/textual_ui/handlers/`.
+- **Protocols** (`vibe/core/protocols.py`) — Shared `typing.Protocol` definitions that decouple core modules and break circular imports.
+
+### Suggested Next Tasks
+
+The following improvements were identified during refactoring and are candidates for future work:
+
+- **Further decomposition** — `QuestionApp` (widget selection logic), `ChatTextArea` (completion and history navigation), and `WelcomeBanner` (animation and metadata rendering) have been partially decomposed but may benefit from additional extraction.
+- **Test file exception narrowing** — Production code uses specific exception types; test files (`tests/`) still contain `except Exception` blocks that could be narrowed for consistency.
+- **Expanded Protocol coverage** — Additional `typing.Protocol` definitions could further decouple modules beyond the core circular import chain.
+- **Cognitive complexity reduction** — Several functions still have elevated C901 complexity scores that could be lowered through further method extraction and early-return guard clauses.
 
 ## License
 
