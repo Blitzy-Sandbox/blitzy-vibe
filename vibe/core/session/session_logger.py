@@ -109,7 +109,7 @@ class SessionLogger:
     def username(self) -> str:
         try:
             return getpass.getuser()
-        except Exception:
+        except (OSError, KeyError, ImportError):
             return "unknown"
 
     def _initialize_session_metadata(self) -> SessionMetadata:
@@ -163,7 +163,7 @@ class SessionLogger:
                 os.fsync(f.wrapped.fileno())
 
             os.replace(temp_metadata_filepath, str(metadata_filepath))
-        except Exception as e:
+        except (OSError, TypeError, ValueError) as e:
             raise RuntimeError(
                 f"Failed to persist session metadata to {metadata_filepath}: {e}"
             ) from e
@@ -189,7 +189,7 @@ class SessionLogger:
                     await f.write(json.dumps(message, ensure_ascii=False) + "\n")
                     await f.flush()
                     os.fsync(f.wrapped.fileno())
-        except Exception as e:
+        except (OSError, TypeError, ValueError) as e:
             raise RuntimeError(
                 f"Failed to persist session messages to {messages_filepath}: {e}"
             ) from e
@@ -226,7 +226,7 @@ class SessionLogger:
                     old_total_messages = old_metadata["total_messages"]
             else:
                 old_total_messages = 0
-        except Exception as e:
+        except (OSError, json.JSONDecodeError, KeyError) as e:
             raise RuntimeError(
                 f"Failed to read session metadata at {self.metadata_filepath}: {e}"
             ) from e
@@ -279,7 +279,7 @@ class SessionLogger:
             }
 
             await SessionLogger.persist_metadata(metadata_dump, self.session_dir)
-        except Exception as e:
+        except (RuntimeError, OSError, TypeError, ValueError) as e:
             raise RuntimeError(
                 f"Failed to save session to {self.session_dir}: {e}"
             ) from e
@@ -312,5 +312,5 @@ class SessionLogger:
                     file_mtime = datetime.fromtimestamp(file_path.stat().st_mtime)
                     if file_mtime < ago:
                         file_path.unlink()
-                except Exception:
+                except OSError:
                     continue
