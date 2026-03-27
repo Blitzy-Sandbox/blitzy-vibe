@@ -15,6 +15,9 @@ class BackendLike(Protocol):
 
     Any backend used by AgentLoop should implement this async context manager
     interface with `complete`, `complete_streaming` and `count_tokens` methods.
+
+    This is the canonical, fully-typed definition. A parallel stdlib-only
+    version exists in ``vibe.core.protocols`` for circular-import resolution.
     """
 
     async def __aenter__(self) -> BackendLike: ...
