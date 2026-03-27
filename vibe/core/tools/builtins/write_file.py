@@ -156,5 +156,5 @@ class WriteFile(
                 mode="w", encoding="utf-8"
             ) as f:
                 await f.write(args.content)
-        except (OSError, PermissionError) as e:
+        except OSError as e:
             raise ToolError(f"Error writing {file_path}: {e}") from e

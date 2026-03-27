@@ -92,7 +92,7 @@ def _try_clipboard_copy(
     for copy_fn in copy_fns:
         try:
             copy_fn(text)
-        except (OSError, subprocess.SubprocessError):
+        except (OSError, subprocess.SubprocessError, RuntimeError):
             pass
         else:
             success = True

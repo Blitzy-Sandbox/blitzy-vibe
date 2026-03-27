@@ -110,7 +110,7 @@ def load_session(
     try:
         loaded_messages, _ = SessionLoader.load_session(session_to_load)
         return loaded_messages
-    except (OSError, json.JSONDecodeError) as e:
+    except (OSError, json.JSONDecodeError, ValueError) as e:
         rprint(f"[red]Failed to load session: {e}[/]")
         sys.exit(1)
 
