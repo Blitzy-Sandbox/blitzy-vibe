@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator
+import json
 import os
 from pathlib import Path
 import sys
@@ -46,6 +47,7 @@ from acp.schema import (
     ToolCallUpdate,
     UserMessageChunk,
 )
+import httpx
 from pydantic import BaseModel, ConfigDict
 
 from vibe import VIBE_ROOT, __version__
@@ -374,7 +376,7 @@ class VibeAcpAgentLoop(AcpAgent):
         except asyncio.CancelledError:
             return PromptResponse(stop_reason="cancelled")
 
-        except Exception as e:
+        except (httpx.HTTPError, json.JSONDecodeError, ConnectionError) as e:
             await self.client.session_update(
                 session_id=session_id,
                 update=AgentMessageChunk(
@@ -544,7 +546,7 @@ def run_acp_server() -> None:
     except KeyboardInterrupt:
         # This is expected when the server is terminated
         pass
-    except Exception as e:
+    except (httpx.HTTPError, asyncio.CancelledError, json.JSONDecodeError, ConnectionError) as e:
         # Log any unexpected errors
         print(f"ACP Agent Server error: {e}", file=sys.stderr)
         raise
