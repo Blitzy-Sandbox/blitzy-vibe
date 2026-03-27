@@ -67,5 +67,5 @@ class WatchController:
                 if not changes:
                     continue
                 self._on_changes(root, changes)
-        except Exception:
+        except OSError:
             ready_event.set()
