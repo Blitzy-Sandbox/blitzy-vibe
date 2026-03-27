@@ -361,7 +361,7 @@ class TestAcpBashEmbedding:
     ) -> None:
         # Make session_update raise an exception
         async def failing_session_update(session_id: str, update, **kwargs) -> None:
-            raise RuntimeError("Session update failed")
+            raise OSError("Session update failed")
 
         mock_client.session_update = failing_session_update
 

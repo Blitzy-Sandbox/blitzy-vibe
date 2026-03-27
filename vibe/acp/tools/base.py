@@ -6,7 +6,7 @@ from typing import Annotated, Protocol, cast, runtime_checkable
 from acp import Client
 from acp.helpers import SessionUpdate, ToolCallContentVariant
 from acp.schema import ToolCallProgress
-from pydantic import BaseModel, ConfigDict, Field, SkipValidation
+from pydantic import BaseModel, ConfigDict, Field, SkipValidation, ValidationError
 
 from vibe.core.tools.base import BaseTool, ToolError
 from vibe.core.tools.manager import ToolManager
@@ -96,5 +96,5 @@ class BaseAcpTool[ToolState: AcpToolState](BaseTool):
                     content=content,
                 ),
             )
-        except Exception as e:
+        except (OSError, ValidationError) as e:
             logger.error(f"Failed to update session: {e!r}")
