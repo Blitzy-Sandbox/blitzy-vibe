@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 from acp.helpers import SessionUpdate
@@ -9,6 +10,7 @@ from acp.schema import (
     ToolCallProgress,
     ToolCallStart,
 )
+from pydantic import ValidationError
 
 from vibe import VIBE_ROOT
 from vibe.acp.tools.base import AcpToolState, BaseAcpTool
@@ -45,7 +47,7 @@ class WriteFile(CoreWriteFileTool, BaseAcpTool[AcpWriteFileState]):
             await client.write_text_file(
                 session_id=session_id, path=str(file_path), content=args.content
             )
-        except Exception as e:
+        except (OSError, FileNotFoundError, asyncio.CancelledError, ValidationError) as e:
             raise ToolError(f"Error writing {file_path}: {e}") from e
 
     @classmethod
