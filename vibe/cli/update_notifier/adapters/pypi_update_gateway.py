@@ -1,7 +1,12 @@
 from __future__ import annotations
 
 import httpx
-from packaging.utils import parse_sdist_filename, parse_wheel_filename
+from packaging.utils import (
+    InvalidSdistFilename,
+    InvalidWheelFilename,
+    parse_sdist_filename,
+    parse_wheel_filename,
+)
 from packaging.version import InvalidVersion, Version
 
 from vibe.cli.update_notifier.ports.update_gateway import (
@@ -99,9 +104,9 @@ def _parse_filename_version(filename: str) -> Version | None:
     try:
         _, version, *_ = parse_wheel_filename(filename)
         return Version(str(version))
-    except Exception:
+    except (InvalidWheelFilename, InvalidVersion):
         try:
             _, sdist_version = parse_sdist_filename(filename)
             return Version(str(sdist_version))
-        except Exception:
+        except (InvalidSdistFilename, InvalidVersion):
             return None
