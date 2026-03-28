@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 from collections.abc import AsyncGenerator
 from datetime import timedelta
 import hashlib
@@ -208,7 +207,7 @@ def create_mcp_http_proxy_tool_class(
                     startup_timeout_sec=self._startup_timeout_sec,
                     tool_timeout_sec=self._tool_timeout_sec,
                 )
-            except (httpx.HTTPError, OSError, asyncio.CancelledError) as exc:
+            except (httpx.HTTPError, OSError) as exc:
                 raise ToolError(f"MCP call failed: {exc}") from exc
 
         @classmethod
@@ -334,7 +333,7 @@ def create_mcp_stdio_proxy_tool_class(
                     tool_timeout_sec=self._tool_timeout_sec,
                 )
                 yield result
-            except (OSError, asyncio.CancelledError) as exc:
+            except OSError as exc:
                 raise ToolError(f"MCP stdio call failed: {exc!r}") from exc
 
         @classmethod

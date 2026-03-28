@@ -16,6 +16,7 @@ from vibe.core.tools.base import (
     ToolPermission,
     ToolPermissionError,
 )
+from vibe.core.tools.manager import NoSuchToolError
 from vibe.core.types import (
     ApprovalResponse,
     AsyncApprovalCallback,
@@ -96,7 +97,7 @@ class ToolExecutor:
 
             try:
                 tool_instance = self._loop.tool_manager.get(tool_call.tool_name)
-            except (OSError, ImportError, KeyError) as exc:
+            except (OSError, ImportError, KeyError, NoSuchToolError) as exc:
                 error_msg = f"Error getting tool '{tool_call.tool_name}': {exc}"
                 yield ToolResultEvent(
                     tool_name=tool_call.tool_name,

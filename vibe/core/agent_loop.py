@@ -389,7 +389,7 @@ class AgentLoop:
             self.messages.append(processed_message)
             return LLMChunk(message=processed_message, usage=result.usage)
 
-        except (BackendError, httpx.HTTPError, asyncio.CancelledError, OSError) as e:
+        except (BackendError, httpx.HTTPError, OSError) as e:
             if _should_raise_rate_limit_error(e):
                 raise RateLimitError(provider.name, active_model.name) from e
 
@@ -441,7 +441,7 @@ class AgentLoop:
 
             self.messages.append(chunk_agg.message)
 
-        except (BackendError, httpx.HTTPError, asyncio.CancelledError, OSError) as e:
+        except (BackendError, httpx.HTTPError, OSError) as e:
             if _should_raise_rate_limit_error(e):
                 raise RateLimitError(provider.name, active_model.name) from e
 

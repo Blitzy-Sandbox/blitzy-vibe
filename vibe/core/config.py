@@ -7,7 +7,7 @@ from pathlib import Path
 import re
 import shlex
 import tomllib
-from typing import TYPE_CHECKING, Annotated, Any, Literal
+from typing import Annotated, Any, Literal
 
 from dotenv import dotenv_values
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -28,12 +28,6 @@ from vibe.core.paths.global_paths import (
 )
 from vibe.core.prompts import SystemPrompt
 from vibe.core.tools.base import BaseToolConfig
-
-if TYPE_CHECKING:
-    from vibe.core.protocols import ConfigLike, ToolManagerLike
-else:
-    ConfigLike = Any
-    ToolManagerLike = Any
 
 
 def load_dotenv_values(

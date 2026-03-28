@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Callable, Iterator
 import hashlib
 import importlib.util
@@ -222,7 +221,7 @@ class ToolManager:
                 http_count,
                 stdio_count,
             )
-        except (OSError, asyncio.CancelledError, ConnectionError) as exc:
+        except (OSError, ConnectionError) as exc:
             logger.warning("Failed to integrate MCP tools: %s", exc)
 
     async def _register_http_server(self, srv: MCPHttp | MCPStreamableHttp) -> int:
@@ -236,7 +235,7 @@ class ToolManager:
             tools: list[RemoteTool] = await list_tools_http(
                 url, headers=headers, startup_timeout_sec=srv.startup_timeout_sec
             )
-        except (OSError, asyncio.CancelledError, ConnectionError) as exc:
+        except (OSError, ConnectionError) as exc:
             logger.warning("MCP HTTP discovery failed for %s: %s", url, exc)
             return 0
 
@@ -273,7 +272,7 @@ class ToolManager:
             tools: list[RemoteTool] = await list_tools_stdio(
                 cmd, env=srv.env or None, startup_timeout_sec=srv.startup_timeout_sec
             )
-        except (OSError, asyncio.CancelledError) as exc:
+        except OSError as exc:
             logger.warning("MCP stdio discovery failed for %r: %s", cmd, exc)
             return 0
 

@@ -64,13 +64,11 @@ from vibe.cli.update_notifier import (
     should_show_whats_new,
 )
 from vibe.cli.update_notifier.update import do_update
-from vibe.core.agent_loop import AgentLoop
+from vibe.core.agent_loop import AgentLoop, AgentLoopError
 from vibe.core.agents import AgentProfile
 from vibe.core.autocompletion.path_prompt_adapter import render_path_prompt
 from vibe.core.config import VibeConfig
 from vibe.core.paths.config_paths import HISTORY_FILE
-from vibe.core.session.session_loader import SessionLoader
-from vibe.core.tools.base import ToolPermission
 from vibe.core.tools.builtins.ask_user_question import (
     AskUserQuestionArgs,
     AskUserQuestionResult,
@@ -177,7 +175,7 @@ class VibeApp(App):  # noqa: PLR0904
                 command_registry=self.commands,
                 id="input-container",
                 safety=self.agent_loop.agent_profile.safety,
-                skill_entries_getter=self._get_skill_entries,
+                skill_entries_getter=self._command_handler._get_skill_entries,
             )
 
         with Horizontal(id="bottom-bar"):
@@ -352,24 +350,8 @@ class VibeApp(App):  # noqa: PLR0904
             for widget in children[:compact_index]:
                 await widget.remove()
 
-    def _set_tool_permission_always(
-        self, tool_name: str, save_permanently: bool = False
-    ) -> None:
-        self.agent_loop.set_tool_permission(
-            tool_name, ToolPermission.ALWAYS, save_permanently
-        )
-
     async def _handle_command(self, user_input: str) -> bool:
         return await self._command_handler.handle_command(user_input)
-
-    def _get_skill_entries(self) -> list[tuple[str, str]]:
-        if not self.agent_loop:
-            return []
-        return [
-            (f"/{name}", info.description)
-            for name, info in self.agent_loop.skill_manager.available_skills.items()
-            if info.user_invocable
-        ]
 
     async def _handle_skill(self, user_input: str) -> bool:
         if not user_input.startswith("/"):
@@ -452,16 +434,13 @@ class VibeApp(App):  # noqa: PLR0904
             msg, messages_area, tool_call_map
         )
 
-    def _is_tool_enabled_in_main_agent(self, tool: str) -> bool:
-        return tool in self.agent_loop.tool_manager.available_tools
-
     async def _approval_callback(
         self, tool: str, args: BaseModel, tool_call_id: str
     ) -> tuple[ApprovalResponse, str | None]:
         # Auto-approve only if parent is in auto-approve mode AND tool is enabled
         # This ensures subagents respect the main agent's tool restrictions
         if self.agent_loop and self.agent_loop.config.auto_approve:
-            if self._is_tool_enabled_in_main_agent(tool):
+            if tool in self.agent_loop.tool_manager.available_tools:
                 return (ApprovalResponse.YES, None)
 
         self._pending_approval = asyncio.Future()
@@ -509,7 +488,7 @@ class VibeApp(App):  # noqa: PLR0904
             if self.event_handler:
                 self.event_handler.stop_current_tool_call()
             raise
-        except (OSError, RuntimeError, RateLimitError) as e:
+        except (OSError, RuntimeError, RateLimitError, AgentLoopError) as e:
             if self._loading_widget and self._loading_widget.parent:
                 await self._loading_widget.remove()
             if self.event_handler:
@@ -562,29 +541,6 @@ class VibeApp(App):  # noqa: PLR0904
 
         self._interrupt_requested = False
 
-    async def _show_help(self) -> None:
-        help_text = self.commands.get_help_text()
-        await self._mount_and_scroll(UserCommandMessage(help_text))
-
-    async def _show_status(self) -> None:
-        stats = self.agent_loop.stats
-        status_text = f"""## Agent Statistics
-
-- **Steps**: {stats.steps:,}
-- **Session Prompt Tokens**: {stats.session_prompt_tokens:,}
-- **Session Completion Tokens**: {stats.session_completion_tokens:,}
-- **Session Total LLM Tokens**: {stats.session_total_llm_tokens:,}
-- **Last Turn Tokens**: {stats.last_turn_total_tokens:,}
-- **Cost**: ${stats.session_cost:.4f}
-"""
-        await self._mount_and_scroll(UserCommandMessage(status_text))
-
-    async def _show_config(self) -> None:
-        """Switch to the configuration app in the bottom panel."""
-        if self._current_bottom_app == BottomApp.Config:
-            return
-        await self._switch_to_config_app()
-
     async def _reload_config(self) -> None:
         try:
             base_config = VibeConfig.load()
@@ -619,30 +575,6 @@ class VibeApp(App):  # noqa: PLR0904
             await self._mount_and_scroll(
                 ErrorMessage(
                     f"Failed to clear history: {e}", collapsed=self._tools_collapsed
-                )
-            )
-
-    async def _show_log_path(self) -> None:
-        if not self.agent_loop.session_logger.enabled:
-            await self._mount_and_scroll(
-                ErrorMessage(
-                    "Session logging is disabled in configuration.",
-                    collapsed=self._tools_collapsed,
-                )
-            )
-            return
-
-        try:
-            log_path = str(self.agent_loop.session_logger.session_dir)
-            await self._mount_and_scroll(
-                UserCommandMessage(
-                    f"## Current Log Directory\n\n`{log_path}`\n\nYou can send this directory to share your interaction."
-                )
-            )
-        except (OSError, AttributeError) as e:
-            await self._mount_and_scroll(
-                ErrorMessage(
-                    f"Failed to get log path: {e}", collapsed=self._tools_collapsed
                 )
             )
 
@@ -687,7 +619,7 @@ class VibeApp(App):  # noqa: PLR0904
         except asyncio.CancelledError:
             compact_msg.set_error("Compaction interrupted")
             raise
-        except (OSError, RuntimeError) as e:
+        except (OSError, RuntimeError, RateLimitError, AgentLoopError) as e:
             compact_msg.set_error(str(e))
         finally:
             self._agent_running = False
@@ -695,21 +627,8 @@ class VibeApp(App):  # noqa: PLR0904
             if self.event_handler:
                 self.event_handler.current_compact = None
 
-    def _get_session_resume_info(self) -> str | None:
-        if not self.agent_loop.session_logger.enabled:
-            return None
-        if not self.agent_loop.session_logger.session_id:
-            return None
-        session_config = self.agent_loop.session_logger.session_config
-        session_path = SessionLoader.does_session_exist(
-            self.agent_loop.session_logger.session_id, session_config
-        )
-        if session_path is None:
-            return None
-        return self.agent_loop.session_logger.session_id[:8]
-
     async def _exit_app(self) -> None:
-        self.exit(result=self._get_session_resume_info())
+        self.exit(result=self._history_handler._get_session_resume_info())
 
     async def _setup_terminal(self) -> None:
         result = setup_terminal()
@@ -912,7 +831,7 @@ class VibeApp(App):  # noqa: PLR0904
         if self._agent_task and not self._agent_task.done():
             self._agent_task.cancel()
 
-        self.exit(result=self._get_session_resume_info())
+        self.exit(result=self._history_handler._get_session_resume_info())
 
     def action_scroll_chat_up(self) -> None:
         try:

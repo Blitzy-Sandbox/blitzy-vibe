@@ -6,6 +6,7 @@ from textual.widget import Widget
 
 from vibe.cli.textual_ui.widgets.messages import AssistantMessage, UserMessage
 from vibe.cli.textual_ui.widgets.tools import ToolCallMessage, ToolResultMessage
+from vibe.core.session.session_loader import SessionLoader
 from vibe.core.types import LLMMessage, Role
 
 if TYPE_CHECKING:
@@ -65,6 +66,20 @@ class HistoryHandler:
                                 collapsed=self._app._tools_collapsed,
                             )
                         )
+
+    def _get_session_resume_info(self) -> str | None:
+        """Return a truncated session ID for resume, or None if unavailable."""
+        if not self._app.agent_loop.session_logger.enabled:
+            return None
+        if not self._app.agent_loop.session_logger.session_id:
+            return None
+        session_config = self._app.agent_loop.session_logger.session_config
+        session_path = SessionLoader.does_session_exist(
+            self._app.agent_loop.session_logger.session_id, session_config
+        )
+        if session_path is None:
+            return None
+        return self._app.agent_loop.session_logger.session_id[:8]
 
     async def mount_history_assistant_message(
         self,
