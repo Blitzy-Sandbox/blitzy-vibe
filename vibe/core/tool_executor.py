@@ -204,48 +204,61 @@ class ToolExecutor:
     def fill_missing_tool_responses(self) -> None:
         """Ensure every assistant tool_call has a matching tool response message.
 
-        Moved verbatim from ``AgentLoop._fill_missing_tool_responses``.
+        Moved verbatim from ``AgentLoop._fill_missing_tool_responses``,
+        then refactored to extract ``_fill_gap_for_message`` to reduce
+        nesting depth (R8 compliance — no ``# noqa`` suppression).
         """
         i = 1
-        while i < len(self._loop.messages):  # noqa: PLR1702
+        while i < len(self._loop.messages):
             msg = self._loop.messages[i]
 
-            if msg.role == "assistant" and msg.tool_calls:
-                expected_responses = len(msg.tool_calls)
+            if msg.role != "assistant" or not msg.tool_calls:
+                i += 1
+                continue
 
-                if expected_responses > 0:
-                    actual_responses = 0
-                    j = i + 1
-                    while j < len(self._loop.messages) and self._loop.messages[j].role == "tool":
-                        actual_responses += 1
-                        j += 1
+            expected_responses = len(msg.tool_calls)
+            if expected_responses > 0:
+                self._fill_gap_for_message(i, msg, expected_responses)
+                i = i + 1 + expected_responses
+            else:
+                i += 1
 
-                    if actual_responses < expected_responses:
-                        insertion_point = i + 1 + actual_responses
+    def _fill_gap_for_message(
+        self, msg_idx: int, msg: LLMMessage, expected_responses: int
+    ) -> None:
+        """Insert placeholder tool responses for any missing replies.
 
-                        for call_idx in range(actual_responses, expected_responses):
-                            tool_call_data = msg.tool_calls[call_idx]
+        Extracted from ``fill_missing_tool_responses`` to eliminate deep
+        nesting (previously 5+ levels).
+        """
+        actual_responses = 0
+        j = msg_idx + 1
+        while j < len(self._loop.messages) and self._loop.messages[j].role == "tool":
+            actual_responses += 1
+            j += 1
 
-                            empty_response = LLMMessage(
-                                role=Role.tool,
-                                tool_call_id=tool_call_data.id or "",
-                                name=(tool_call_data.function.name or "")
-                                if tool_call_data.function
-                                else "",
-                                content=str(
-                                    get_user_cancellation_message(
-                                        CancellationReason.TOOL_NO_RESPONSE
-                                    )
-                                ),
-                            )
+        if actual_responses >= expected_responses:
+            return
 
-                            self._loop.messages.insert(insertion_point, empty_response)
-                            insertion_point += 1
+        insertion_point = msg_idx + 1 + actual_responses
+        assert msg.tool_calls is not None  # guarded by caller
 
-                    i = i + 1 + expected_responses
-                    continue
+        for call_idx in range(actual_responses, expected_responses):
+            tool_call_data = msg.tool_calls[call_idx]
 
-            i += 1
+            empty_response = LLMMessage(
+                role=Role.tool,
+                tool_call_id=tool_call_data.id or "",
+                name=(tool_call_data.function.name or "")
+                if tool_call_data.function
+                else "",
+                content=str(
+                    get_user_cancellation_message(CancellationReason.TOOL_NO_RESPONSE)
+                ),
+            )
+
+            self._loop.messages.insert(insertion_point, empty_response)
+            insertion_point += 1
 
     # ------------------------------------------------------------------
     # Private helpers
