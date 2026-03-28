@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable, Iterator
 import hashlib
 import importlib.util
@@ -9,6 +10,8 @@ from pathlib import Path
 import re
 import sys
 from typing import TYPE_CHECKING, Any
+
+from pydantic import ValidationError
 
 from vibe.core.paths.config_paths import resolve_local_tools_dir
 from vibe.core.paths.global_paths import DEFAULT_TOOL_DIR, GLOBAL_TOOLS_DIR
@@ -144,7 +147,7 @@ class ToolManager:
             sys.modules[module_name] = module
             try:
                 spec.loader.exec_module(module)
-            except Exception:
+            except (ImportError, OSError, SyntaxError, AttributeError):
                 return
 
         tools = []
@@ -171,7 +174,7 @@ class ToolManager:
                 tool_name = cls.get_name()
                 config_class = cls._get_tool_config_class()
                 defaults[tool_name] = config_class().model_dump(exclude_none=True)
-            except Exception as e:
+            except (OSError, ImportError, ValidationError, AttributeError, TypeError) as e:
                 logger.warning(
                     "Failed to get defaults for tool %s: %s", cls.__name__, e
                 )
@@ -219,7 +222,7 @@ class ToolManager:
                 http_count,
                 stdio_count,
             )
-        except Exception as exc:
+        except (OSError, asyncio.CancelledError, ConnectionError) as exc:
             logger.warning("Failed to integrate MCP tools: %s", exc)
 
     async def _register_http_server(self, srv: MCPHttp | MCPStreamableHttp) -> int:
@@ -233,7 +236,7 @@ class ToolManager:
             tools: list[RemoteTool] = await list_tools_http(
                 url, headers=headers, startup_timeout_sec=srv.startup_timeout_sec
             )
-        except Exception as exc:
+        except (OSError, asyncio.CancelledError, ConnectionError) as exc:
             logger.warning("MCP HTTP discovery failed for %s: %s", url, exc)
             return 0
 
@@ -251,7 +254,7 @@ class ToolManager:
                 )
                 self._available[proxy_cls.get_name()] = proxy_cls
                 added += 1
-            except Exception as exc:
+            except (OSError, ValueError, TypeError) as exc:
                 logger.warning(
                     "Failed to register MCP HTTP tool '%s' from %s: %r",
                     getattr(remote, "name", "<unknown>"),
@@ -270,7 +273,7 @@ class ToolManager:
             tools: list[RemoteTool] = await list_tools_stdio(
                 cmd, env=srv.env or None, startup_timeout_sec=srv.startup_timeout_sec
             )
-        except Exception as exc:
+        except (OSError, asyncio.CancelledError) as exc:
             logger.warning("MCP stdio discovery failed for %r: %s", cmd, exc)
             return 0
 
@@ -288,7 +291,7 @@ class ToolManager:
                 )
                 self._available[proxy_cls.get_name()] = proxy_cls
                 added += 1
-            except Exception as exc:
+            except (OSError, ValueError, TypeError) as exc:
                 logger.warning(
                     "Failed to register MCP stdio tool '%s' from %r: %r",
                     getattr(remote, "name", "<unknown>"),
