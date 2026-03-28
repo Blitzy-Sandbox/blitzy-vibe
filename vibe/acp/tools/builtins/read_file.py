@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
+
+from pydantic import ValidationError
 
 from vibe import VIBE_ROOT
 from vibe.acp.tools.base import AcpToolState, BaseAcpTool
@@ -40,7 +43,7 @@ class ReadFile(CoreReadFileTool, BaseAcpTool[AcpReadFileState]):
             response = await client.read_text_file(
                 session_id=session_id, path=str(file_path), line=line, limit=limit
             )
-        except Exception as e:
+        except (OSError, FileNotFoundError, asyncio.CancelledError, ValidationError) as e:
             raise ToolError(f"Error reading {file_path}: {e}") from e
 
         content_lines = response.content.splitlines(keepends=True)
