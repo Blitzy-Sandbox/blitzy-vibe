@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 from acp.helpers import SessionUpdate
@@ -9,6 +10,7 @@ from acp.schema import (
     ToolCallProgress,
     ToolCallStart,
 )
+from pydantic import ValidationError
 
 from vibe import VIBE_ROOT
 from vibe.acp.tools.base import AcpToolState, BaseAcpTool
@@ -45,7 +47,12 @@ class SearchReplace(CoreSearchReplaceTool, BaseAcpTool[AcpSearchReplaceState]):
             response = await client.read_text_file(
                 session_id=session_id, path=str(file_path)
             )
-        except Exception as e:
+        except (
+            OSError,
+            FileNotFoundError,
+            asyncio.CancelledError,
+            ValidationError,
+        ) as e:
             raise ToolError(f"Unexpected error reading {file_path}: {e}") from e
 
         self.state.file_backup_content = response.content
@@ -67,7 +74,12 @@ class SearchReplace(CoreSearchReplaceTool, BaseAcpTool[AcpSearchReplaceState]):
             await client.write_text_file(
                 session_id=session_id, path=str(file_path), content=content
             )
-        except Exception as e:
+        except (
+            OSError,
+            FileNotFoundError,
+            asyncio.CancelledError,
+            ValidationError,
+        ) as e:
             raise ToolError(f"Error writing {file_path}: {e}") from e
 
     @classmethod
