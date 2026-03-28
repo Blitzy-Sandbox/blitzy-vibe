@@ -125,7 +125,8 @@ class BaseTool[
     ) -> AsyncGenerator[ToolStreamEvent | ToolResult, None]:
         """Invoke the tool with the given arguments."""
         raise NotImplementedError  # pragma: no cover
-        yield  # type: ignore[misc]
+        if False:
+            yield
 
     @classmethod
     @functools.cache
