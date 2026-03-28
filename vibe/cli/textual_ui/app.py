@@ -91,9 +91,11 @@ class BottomApp(StrEnum):
     Question = auto()
 
 
-class VibeApp(App):  # noqa: PLR0904
+class VibeApp(App):  # noqa: PLR0904 — Textual requires public on_*/action_* handlers
     ENABLE_COMMAND_PALETTE = False
     CSS_PATH = "app.tcss"
+
+    _DOUBLE_ESC_THRESHOLD: ClassVar[float] = 0.2
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("ctrl+c", "clear_quit", "Quit", show=False),
@@ -754,7 +756,7 @@ class VibeApp(App):  # noqa: PLR0904
         if (
             self._current_bottom_app == BottomApp.Input
             and self._last_escape_time is not None
-            and (current_time - self._last_escape_time) < 0.2  # noqa: PLR2004
+            and (current_time - self._last_escape_time) < self._DOUBLE_ESC_THRESHOLD
         ):
             try:
                 input_widget = self.query_one(ChatInputContainer)

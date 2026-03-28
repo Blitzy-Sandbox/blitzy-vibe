@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, ClassVar, cast
 
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
@@ -92,7 +92,7 @@ class ThemeSelectionScreen(OnboardingScreen):
 
     @property
     def _has_terminal_theme(self) -> bool:
-        app: OnboardingApp = self.app  # type: ignore[assignment]
+        app = cast("OnboardingApp", self.app)
         return app._terminal_theme is not None
 
     @property

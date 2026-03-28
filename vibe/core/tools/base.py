@@ -124,7 +124,7 @@ class BaseTool[
         self, args: ToolArgs, ctx: InvokeContext | None = None
     ) -> AsyncGenerator[ToolStreamEvent | ToolResult, None]:
         """Invoke the tool with the given arguments."""
-        raise NotImplementedError  # pragma: no cover
+        raise NotImplementedError
         if False:
             yield
 
