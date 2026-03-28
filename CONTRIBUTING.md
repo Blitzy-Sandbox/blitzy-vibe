@@ -192,7 +192,7 @@ All Python code in the `vibe/` package must follow the conventions documented in
 - **No suppression annotations** — Do not introduce new `# noqa`, `# type: ignore`, or `# pragma: no cover` comments. Fix the underlying issue instead.
 - **No bare exception handlers** — Use specific exception types rather than `except Exception`. Choose the narrowest applicable type based on the operations performed.
 - **Ruff** — Line length 88, Python 3.12 target, preview mode enabled. See `[tool.ruff]` in `pyproject.toml` for the full lint rule set.
-- **Pyright** — Strict mode enabled for all `vibe/**/*.py` and `tests/**/*.py` files with Python 3.12 as the target version.
+- **Pyright** — Configured for all `vibe/**/*.py` and `tests/**/*.py` files with Python 3.12 as the target version.
 - **Pylint limits** — `max-statements=50`, `max-branches=15`, `max-locals=15`, `max-args=9`, `max-returns=6`, `max-nested-blocks=4`.
 
 ### Suggested Next Tasks
