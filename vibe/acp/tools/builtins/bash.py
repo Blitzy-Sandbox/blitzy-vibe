@@ -77,7 +77,7 @@ class Bash(CoreBashTool, BaseAcpTool[AcpBashState]):
                 await client.release_terminal(
                     session_id=session_id, terminal_id=terminal_id
                 )
-            except (OSError, FileNotFoundError, asyncio.CancelledError, ValidationError) as e:
+            except (OSError, FileNotFoundError, ValidationError) as e:
                 logger.error(f"Failed to release terminal: {e!r}")
 
     @classmethod
@@ -105,7 +105,7 @@ class Bash(CoreBashTool, BaseAcpTool[AcpBashState]):
                 await client.kill_terminal(
                     session_id=session_id, terminal_id=terminal_id
                 )
-            except (OSError, FileNotFoundError, asyncio.CancelledError, ValidationError) as e:
+            except (OSError, FileNotFoundError, ValidationError) as e:
                 logger.error(f"Failed to kill terminal: {e!r}")
 
             raise self._build_timeout_error(command, timeout)

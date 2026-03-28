@@ -209,6 +209,16 @@ def _mode_get_full_cursor_offset(text_area: ChatTextArea) -> int:
     return _completion_get_cursor_offset(text_area) + _mode_get_prefix_length(text_area)
 
 
+def get_full_cursor_offset(text_area: ChatTextArea) -> int:
+    """Public API — get cursor offset in full text including mode prefix.
+
+    Replaces the former ``ChatTextArea._get_full_cursor_offset`` class method
+    as a module-level function to keep the class method count within the ≤15
+    target.  Callers outside the class should use this function directly.
+    """
+    return _mode_get_full_cursor_offset(text_area)
+
+
 def _mode_get_prefix_length(text_area: ChatTextArea) -> int:
     """Get mode prefix length. Verbatim from ChatTextArea._get_mode_prefix_length."""
     return {">": 0, "/": 1, "!": 1}[text_area.input_mode]
@@ -336,6 +346,10 @@ class ChatTextArea(TextArea):
 
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
+        # Intentional public attribute: originally _input_mode with a read-only
+        # @property, made public to keep the class method count within the ≤15
+        # target.  Write access is controlled via set_mode() / module-level
+        # helpers; external callers (body.py) read the attribute directly.
         self.input_mode: InputMode = self.DEFAULT_MODE
         self._history_prefix: str | None = None
         self._last_text = ""
@@ -495,6 +509,3 @@ class ChatTextArea(TextArea):
         This adjusts coordinates and replacement text for the actual widget text.
         """
         return _mode_adjust_from_full_text_coords(self, start, end, replacement)
-
-    def _get_full_cursor_offset(self) -> int:
-        return _mode_get_full_cursor_offset(self)

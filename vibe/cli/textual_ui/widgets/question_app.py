@@ -22,6 +22,8 @@ if TYPE_CHECKING:
 
 from vibe.core.tools.builtins.ask_user_question import Answer
 
+__all__ = ["QuestionApp"]
+
 
 class SelectionHelper:
     """Handles selection, toggle, and question navigation logic for QuestionApp."""
@@ -446,32 +448,6 @@ class QuestionApp(Container):
         return len(self._current_question.options) + 1 + (
             1 if self._current_question.multi_select else 0
         )
-
-    @property
-    def _other_option_idx(self) -> int:
-        """Index of the 'Other' option."""
-        return len(self._current_question.options)
-
-    @property
-    def _submit_option_idx(self) -> int:
-        """Index of the 'Submit' option (multi-select only)."""
-        return len(self._current_question.options) + 1
-
-    def _get_other_text(self, idx: int) -> str:
-        """Retrieve stored 'Other' text for a given question index."""
-        return self._answer_manager.get_other_text(idx)
-
-    def _save_current_answer(self) -> None:
-        """Save the current answer via the answer manager."""
-        self._answer_manager.save_current_answer()
-
-    def _all_answered(self) -> bool:
-        """Check if all questions have been answered."""
-        return self._answer_manager.all_answered()
-
-    def _switch_question(self, new_idx: int) -> None:
-        """Switch to a different question by index."""
-        self._selection_helper.switch_question(new_idx)
 
     def compose(self) -> ComposeResult:
         with Vertical(id="question-content"):
