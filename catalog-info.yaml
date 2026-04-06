@@ -5,10 +5,9 @@ metadata:
   description: "Mistral Vibe rebranded to Blitzy Agent — purple theme migration, structural decomposition, and exception-safety hardening"
   tags:
     - python
-    - library
-    - complete
+    - infrastructure
+    - new-feature
   labels:
-    blitzy.com/status: complete
     blitzy.com/language: python
   annotations:
     github.com/project-slug: Blitzy-Sandbox/blitzy-vibe
