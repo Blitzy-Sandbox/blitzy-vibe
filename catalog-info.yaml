@@ -1,0 +1,29 @@
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: blitzy-vibe
+  description: "Mistral Vibe rebranded to Blitzy Agent — purple theme migration, structural decomposition, and exception-safety hardening"
+  tags:
+    - python
+    - library
+    - complete
+  labels:
+    blitzy.com/status: complete
+    blitzy.com/language: python
+  annotations:
+    github.com/project-slug: Blitzy-Sandbox/blitzy-vibe
+    backstage.io/source-location: url:https://github.com/Blitzy-Sandbox/blitzy-vibe/tree/main/
+  links:
+    - url: https://github.com/Blitzy-Sandbox/blitzy-vibe
+      title: GitHub Repository
+    - url: https://github.com/Blitzy-Sandbox/blitzy-vibe/pull/1
+      title: "PR #1: Rebrand Vibe to Blitzy Agent"
+      icon: github
+    - url: https://github.com/Blitzy-Sandbox/blitzy-vibe/tree/main/blitzy/documentation
+      title: Blitzy Documentation
+      icon: docs
+spec:
+  type: library
+  lifecycle: production
+  owner: blitzy-sandbox
+  system: blitzy-sandbox-projects
