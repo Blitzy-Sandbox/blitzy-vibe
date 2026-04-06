@@ -10,6 +10,7 @@ metadata:
   labels:
     blitzy.com/language: python
   annotations:
+    backstage.io/techdocs-ref: dir:.
     github.com/project-slug: Blitzy-Sandbox/blitzy-vibe
     backstage.io/source-location: url:https://github.com/Blitzy-Sandbox/blitzy-vibe/tree/main/
   links:
