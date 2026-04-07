@@ -48,6 +48,7 @@ from vibe.cli.textual_ui.widgets.messages import (
 from vibe.cli.textual_ui.widgets.no_markup_static import NoMarkupStatic
 from vibe.cli.textual_ui.widgets.path_display import PathDisplay
 from vibe.cli.textual_ui.widgets.question_app import QuestionApp
+from vibe.cli.textual_ui.widgets.status_message import StatusMessage
 from vibe.cli.textual_ui.widgets.tools import ToolCallMessage, ToolResultMessage
 from vibe.cli.textual_ui.widgets.welcome import WelcomeBanner
 from vibe.cli.update_notifier import (
@@ -126,7 +127,7 @@ class VibeApp(App):  # noqa: PLR0904
         update_notifier: UpdateGateway | None = None,
         update_cache_repository: UpdateCacheRepository | None = None,
         current_version: str = CORE_VERSION,
-
+        bootstrap_status: str | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
@@ -153,6 +154,7 @@ class VibeApp(App):  # noqa: PLR0904
         self._current_streaming_message: AssistantMessage | None = None
         self._current_streaming_reasoning: ReasoningMessage | None = None
         self._update_notifier = update_notifier
+        self._bootstrap_status = bootstrap_status
         self._update_cache_repository = update_cache_repository
         self._current_version = current_version
 
@@ -227,6 +229,11 @@ class VibeApp(App):  # noqa: PLR0904
 
         chat_input_container = self.query_one(ChatInputContainer)
         chat_input_container.focus_input()
+        
+        # Show bootstrap status if available
+        if self._bootstrap_status:
+            await self._mount_and_scroll(StatusMessage(self._bootstrap_status))
+        
         await self._show_dangerous_directory_warning()
         await self._check_and_show_whats_new()
 
@@ -1202,7 +1209,11 @@ def _print_session_resume_message(session_id: str | None) -> None:
     print(f"Or: blitzy --resume {session_id}")
 
 
-def run_textual_ui(agent_loop: AgentLoop, initial_prompt: str | None = None) -> None:
+def run_textual_ui(
+    agent_loop: AgentLoop, 
+    initial_prompt: str | None = None,
+    bootstrap_status: str | None = None
+) -> None:
     update_notifier = PyPIUpdateGateway(project_name="blitzy-agent")
     update_cache_repository = FileSystemUpdateCacheRepository()
     app = VibeApp(
@@ -1210,6 +1221,7 @@ def run_textual_ui(agent_loop: AgentLoop, initial_prompt: str | None = None) -> 
         initial_prompt=initial_prompt,
         update_notifier=update_notifier,
         update_cache_repository=update_cache_repository,
+        bootstrap_status=bootstrap_status,
     )
     session_id = app.run()
     _print_session_resume_message(session_id)

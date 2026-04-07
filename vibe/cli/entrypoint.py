@@ -17,9 +17,62 @@ from vibe.setup.trusted_folders.trust_folder_dialog import (
     ask_trust_folder,
 )
 
+SUBCOMMANDS = {"bootstrap", "skills"}
+
+
+def _parse_bootstrap_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="blitzy bootstrap",
+        description="Bootstrap a dev/qa/prod environment",
+    )
+    parser.add_argument(
+        "environment",
+        nargs="?",
+        default="dev",
+        choices=["dev", "qa", "prod"],
+    )
+    parser.add_argument("--test", action="store_true", help="Run tests after bootstrap")
+    parser.add_argument("--skip-make", action="store_true", help="Skip make targets")
+    parser.add_argument(
+        "--blitzy-env-path",
+        type=Path,
+        help="Path to Blitzy env files directory",
+    )
+    args = parser.parse_args(sys.argv[2:])
+    args.command = "bootstrap"
+    return args
+
+
+def _parse_skills_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="blitzy skills",
+        description="Manage Blitzy skills",
+    )
+    parser.add_argument(
+        "action",
+        nargs="?",
+        default="sync",
+        choices=["sync"],
+        help="Action to perform (default: sync)",
+    )
+    args = parser.parse_args(sys.argv[2:])
+    args.command = "skills"
+    return args
+
 
 def parse_arguments() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run the Blitzy Agent interactive CLI")
+    # If the first arg is a known subcommand, delegate to its parser.
+    if len(sys.argv) > 1 and sys.argv[1] in SUBCOMMANDS:
+        if sys.argv[1] == "skills":
+            return _parse_skills_args()
+        return _parse_bootstrap_args()
+
+    parser = argparse.ArgumentParser(
+        description="Blitzy Agent CLI",
+        epilog="subcommands:\n  bootstrap    Bootstrap dev environment\n  skills       Sync bundled skills to Claude Code\n\n"
+        "Run `blitzy <subcommand> --help` for subcommand-specific options.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument(
         "-v", "--version", action="version", version=f"%(prog)s {__version__}"
     )
@@ -98,7 +151,21 @@ def parse_arguments() -> argparse.Namespace:
         metavar="SESSION_ID",
         help="Resume a specific session by its ID (supports partial matching)",
     )
-    return parser.parse_args()
+    
+    parser.add_argument(
+        "--force-bootstrap",
+        action="store_true",
+        help="Force environment bootstrap even if cached environment exists",
+    )
+    parser.add_argument(
+        "--skip-auto-bootstrap",
+        action="store_true",
+        help="Skip automatic environment bootstrap",
+    )
+    
+    args = parser.parse_args()
+    args.command = None
+    return args
 
 
 def check_and_resolve_trusted_folder() -> None:
@@ -145,6 +212,18 @@ def main() -> None:
     signal.signal(signal.SIGINT, signal.SIG_IGN)
 
     args = parse_arguments()
+
+    if args.command == "bootstrap":
+        from vibe.cli.bootstrap import run_bootstrap
+
+        run_bootstrap(args)
+        sys.exit(0)
+
+    if args.command == "skills":
+        from vibe.cli.skills_sync import sync_skills_to_claude_code
+
+        sync_skills_to_claude_code()
+        sys.exit(0)
 
     if args.workdir:
         workdir = args.workdir.expanduser().resolve()
