@@ -26,4 +26,4 @@ spec:
   type: library
   lifecycle: production
   owner: blitzy-sandbox
-  system: blitzy-sandbox-projects
+  system: blitzy-python
