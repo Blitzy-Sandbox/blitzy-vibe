@@ -1,11 +1,24 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from pathlib import Path
+from unittest.mock import PropertyMock, patch
 
 import pytest
 import yaml
 
 from vibe.core.config import SessionLoggingConfig, VibeConfig
+
+
+@pytest.fixture(autouse=True)
+def _no_bundled_skills(tmp_path: Path) -> Iterator[None]:
+    """Prevent bundled skills from leaking into unit tests."""
+    fake = tmp_path / "_no_bundled"
+    with patch(
+        "vibe.core.skills.manager.BUNDLED_SKILLS_DIR",
+    ) as mock_dir:
+        type(mock_dir).path = PropertyMock(return_value=fake)
+        yield
 
 
 @pytest.fixture

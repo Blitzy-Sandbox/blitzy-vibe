@@ -1,11 +1,28 @@
 from __future__ import annotations
 
 import argparse
+import os
 import signal
 import sys
+import time
+from datetime import datetime, timedelta
+from pathlib import Path
 
 from rich import print as rprint
+from rich.console import Console
 
+from vibe.cli.bootstrap import BootstrapContext
+from vibe.cli.bootstrap.env_snapshot import env_file_path, repo_tag
+from vibe.cli.bootstrap.steps import (
+    deactivate_venv,
+    find_or_create_venv,
+    load_env_config_yaml,
+    load_env_file,
+    run_make_targets,
+    set_blitzy_env_path,
+    set_local_development,
+    set_postgres_port,
+)
 from vibe.cli.textual_ui.app import run_textual_ui
 from vibe.core.agent_loop import AgentLoop
 from vibe.core.agents.models import BuiltinAgentName
@@ -21,6 +38,8 @@ from vibe.core.session.session_loader import SessionLoader
 from vibe.core.types import LLMMessage, OutputFormat, Role
 from vibe.core.utils import ConversationLimitException, logger
 from vibe.setup.onboarding import run_onboarding
+
+console = Console()
 
 
 def get_initial_agent_name(args: argparse.Namespace) -> str:
@@ -71,6 +90,123 @@ def bootstrap_config_files() -> None:
             HISTORY_FILE.path.write_text("Hello Blitzy!\n", "utf-8")
         except Exception as e:
             rprint(f"[yellow]Could not create history file: {e}[/]")
+
+
+def _has_archie_bootstrap() -> bool:
+    """Check if the current project has an archie-bootstrap script."""
+    # Walk up from cwd looking for archie-bootstrap
+    current = Path.cwd()
+    while current != current.parent:
+        if (current / "archie-bootstrap").exists():
+            return True
+        if (current / "Makefile").exists():
+            # Check if Makefile has archie targets
+            try:
+                makefile_content = (current / "Makefile").read_text()
+                if "archie" in makefile_content.lower():
+                    return True
+            except Exception:
+                pass
+        current = current.parent
+    return False
+
+
+def _get_bootstrap_timestamp_path() -> Path:
+    """Get the path to the bootstrap timestamp file."""
+    return env_file_path().with_suffix(".timestamp")
+
+
+def _is_bootstrap_stale(hours: int = 24) -> bool:
+    """Check if the bootstrap environment is stale."""
+    env_path = env_file_path()
+    timestamp_path = _get_bootstrap_timestamp_path()
+    
+    # If env file doesn't exist, bootstrap is needed
+    if not env_path.exists():
+        return True
+    
+    # If timestamp doesn't exist, consider it stale
+    if not timestamp_path.exists():
+        return True
+    
+    try:
+        timestamp = float(timestamp_path.read_text().strip())
+        age = datetime.now() - datetime.fromtimestamp(timestamp)
+        return age > timedelta(hours=hours)
+    except Exception:
+        # If we can't read the timestamp, consider it stale
+        return True
+
+
+def _update_bootstrap_timestamp() -> None:
+    """Update the bootstrap timestamp file."""
+    timestamp_path = _get_bootstrap_timestamp_path()
+    timestamp_path.parent.mkdir(parents=True, exist_ok=True)
+    timestamp_path.write_text(str(time.time()))
+
+
+def _cleanup_stale_env_files(days: int = 30) -> None:
+    """Clean up stale environment files from other projects."""
+    archie_home = Path.home() / ".archie"
+    if not archie_home.exists():
+        return
+    
+    current_tag = repo_tag()
+    cutoff = datetime.now() - timedelta(days=days)
+    
+    for env_file in archie_home.glob("*-env"):
+        # Skip current project's env file
+        if env_file.stem == f"{current_tag}-env":
+            continue
+        
+        try:
+            mtime = datetime.fromtimestamp(env_file.stat().st_mtime)
+            if mtime < cutoff:
+                env_file.unlink()
+                # Also remove timestamp if it exists
+                timestamp_file = env_file.with_suffix(".timestamp")
+                if timestamp_file.exists():
+                    timestamp_file.unlink()
+        except Exception:
+            pass
+
+
+def run_auto_bootstrap() -> bool:
+    """Run a minimal, non-interactive bootstrap. Returns True if successful."""
+    try:
+        before_env = dict(os.environ)
+        
+        ctx = BootstrapContext(
+            environment="dev",
+            skip_make=True,  # Keep it fast
+            run_tests_flag=False,
+            blitzy_env_path_arg=None,
+        )
+        
+        # Run minimal bootstrap steps
+        steps = [
+            deactivate_venv,
+            find_or_create_venv,
+            set_blitzy_env_path,
+            load_env_file,
+            load_env_config_yaml,
+            set_postgres_port,
+            set_local_development,
+        ]
+        
+        for step_fn in steps:
+            step_fn(ctx)
+        
+        # Update timestamp on success
+        _update_bootstrap_timestamp()
+        
+        # Clean up old env files
+        _cleanup_stale_env_files()
+        
+        return True
+    except Exception as e:
+        logger.warning(f"Auto-bootstrap failed: {e}")
+        return False
 
 
 def load_session(
@@ -125,6 +261,20 @@ def _load_messages_from_previous_session(
 def run_cli(args: argparse.Namespace) -> None:
     load_dotenv_values()
     bootstrap_config_files()
+    
+    # Auto-bootstrap check
+    bootstrap_status = None
+    if _has_archie_bootstrap() and not getattr(args, 'skip_auto_bootstrap', False):
+        force_bootstrap = getattr(args, 'force_bootstrap', False)
+        
+        if force_bootstrap or _is_bootstrap_stale():
+            console.print("[dim]Preparing environment...[/]")
+            if run_auto_bootstrap():
+                bootstrap_status = "✓ Environment ready"
+            else:
+                bootstrap_status = "⚠ Environment setup incomplete"
+        else:
+            bootstrap_status = "✓ Using cached environment"
 
     if args.setup:
         run_onboarding()
@@ -184,6 +334,7 @@ def run_cli(args: argparse.Namespace) -> None:
             run_textual_ui(
                 agent_loop=agent_loop,
                 initial_prompt=args.initial_prompt or stdin_prompt,
+                bootstrap_status=bootstrap_status,
             )
 
     except (KeyboardInterrupt, EOFError):
