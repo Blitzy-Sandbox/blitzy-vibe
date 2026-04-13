@@ -190,7 +190,7 @@ class TestAcpBashExecution:
 
     @pytest.mark.asyncio
     async def test_run_create_terminal_failure(self, mock_client: MockClient) -> None:
-        mock_client._create_terminal_error = RuntimeError("Connection failed")
+        mock_client._create_terminal_error = OSError("Connection failed")
 
         tool = Bash(
             config=BashToolConfig(),
@@ -205,7 +205,7 @@ class TestAcpBashExecution:
 
         assert (
             str(exc_info.value)
-            == "Failed to create terminal: RuntimeError('Connection failed')"
+            == "Failed to create terminal: OSError('Connection failed')"
         )
 
     @pytest.mark.asyncio
@@ -304,7 +304,7 @@ class TestAcpBashTimeout:
         mock_client._terminal_handle = custom_handle
 
         async def failing_kill() -> None:
-            raise RuntimeError("Kill failed")
+            raise OSError("Kill failed")
 
         custom_handle.kill = failing_kill
 
@@ -361,7 +361,7 @@ class TestAcpBashEmbedding:
     ) -> None:
         # Make session_update raise an exception
         async def failing_session_update(session_id: str, update, **kwargs) -> None:
-            raise RuntimeError("Session update failed")
+            raise OSError("Session update failed")
 
         mock_client.session_update = failing_session_update
 
@@ -474,7 +474,7 @@ class TestAcpBashCleanup:
         custom_handle = MockTerminalHandle(terminal_id="release_failure_terminal")
 
         async def failing_release() -> None:
-            raise RuntimeError("Release failed")
+            raise OSError("Release failed")
 
         custom_handle.release = failing_release
         mock_client._terminal_handle = custom_handle

@@ -5,6 +5,8 @@ from logging import getLogger
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from pydantic import ValidationError
+
 from vibe.core.paths.config_paths import resolve_local_skills_dir
 from vibe.core.paths.global_paths import GLOBAL_SKILLS_DIR
 from vibe.core.skills.models import SkillInfo, SkillMetadata
@@ -104,7 +106,7 @@ class SkillManager:
     def _try_load_skill(self, skill_file: Path) -> SkillInfo | None:
         try:
             skill_info = self._parse_skill_file(skill_file)
-        except Exception as e:
+        except (SkillParseError, ValidationError) as e:
             logger.warning("Failed to parse skill at %s: %s", skill_file, e)
             return None
         return skill_info

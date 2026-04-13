@@ -10,6 +10,7 @@ from acp.schema import (
     ToolCallStart,
     WaitForTerminalExitResponse,
 )
+from pydantic import ValidationError
 
 from vibe import VIBE_ROOT
 from vibe.acp.tools.base import AcpToolState, BaseAcpTool
@@ -46,7 +47,7 @@ class Bash(CoreBashTool, BaseAcpTool[AcpBashState]):
                 cwd=str(Path.cwd()),
                 output_byte_limit=max_bytes,
             )
-        except Exception as e:
+        except (OSError, FileNotFoundError, asyncio.CancelledError, ValidationError) as e:
             raise ToolError(f"Failed to create terminal: {e!r}") from e
 
         terminal_id = terminal_handle.id
@@ -76,7 +77,7 @@ class Bash(CoreBashTool, BaseAcpTool[AcpBashState]):
                 await client.release_terminal(
                     session_id=session_id, terminal_id=terminal_id
                 )
-            except Exception as e:
+            except (OSError, FileNotFoundError, ValidationError) as e:
                 logger.error(f"Failed to release terminal: {e!r}")
 
     @classmethod
@@ -104,7 +105,7 @@ class Bash(CoreBashTool, BaseAcpTool[AcpBashState]):
                 await client.kill_terminal(
                     session_id=session_id, terminal_id=terminal_id
                 )
-            except Exception as e:
+            except (OSError, FileNotFoundError, ValidationError) as e:
                 logger.error(f"Failed to kill terminal: {e!r}")
 
             raise self._build_timeout_error(command, timeout)

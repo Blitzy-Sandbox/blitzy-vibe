@@ -183,7 +183,7 @@ class TestAcpReadFileExecution:
         self, mock_client: MockClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.chdir(tmp_path)
-        mock_client._read_error = RuntimeError("File not found")
+        mock_client._read_error = OSError("File not found")
         test_file = tmp_path / "test.txt"
         test_file.touch()
         tool = ReadFile(

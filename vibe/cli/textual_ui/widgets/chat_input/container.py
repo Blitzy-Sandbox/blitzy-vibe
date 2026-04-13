@@ -6,6 +6,7 @@ from typing import Any
 
 from textual.app import ComposeResult
 from textual.containers import Vertical
+from textual.css.query import NoMatches
 from textual.message import Message
 
 from vibe.cli.autocompletion.path_completion import PathCompletionController
@@ -16,7 +17,10 @@ from vibe.cli.textual_ui.widgets.chat_input.completion_manager import (
     MultiCompletionManager,
 )
 from vibe.cli.textual_ui.widgets.chat_input.completion_popup import CompletionPopup
-from vibe.cli.textual_ui.widgets.chat_input.text_area import ChatTextArea
+from vibe.cli.textual_ui.widgets.chat_input.text_area import (
+    ChatTextArea,
+    get_full_cursor_offset,
+)
 from vibe.core.agents import AgentSafety
 from vibe.core.autocompletion.completers import CommandCompleter, PathCompleter
 
@@ -103,7 +107,7 @@ class ChatInputContainer(Vertical):
         widget = self._body.input_widget
         if widget:
             self._completion_manager.on_text_changed(
-                widget.get_full_text(), widget._get_full_cursor_offset()
+                widget.get_full_text(), get_full_cursor_offset(widget)
             )
 
     def focus_input(self) -> None:
@@ -167,7 +171,7 @@ class ChatInputContainer(Vertical):
 
         try:
             input_box = self.get_widget_by_id(self.ID_INPUT_BOX)
-        except Exception:
+        except NoMatches:
             return
 
         for border_class in SAFETY_BORDER_CLASSES.values():

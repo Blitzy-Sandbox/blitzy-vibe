@@ -166,7 +166,7 @@ class TestAcpSearchReplaceExecution:
         self, mock_client: MockClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.chdir(tmp_path)
-        mock_client._read_error = RuntimeError("File not found")
+        mock_client._read_error = FileNotFoundError("File not found")
 
         tool = SearchReplace(
             config=SearchReplaceConfig(),
@@ -194,7 +194,7 @@ class TestAcpSearchReplaceExecution:
         self, mock_client: MockClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.chdir(tmp_path)
-        mock_client._write_error = RuntimeError("Permission denied")
+        mock_client._write_error = PermissionError("Permission denied")
         test_file = tmp_path / "test.txt"
         test_file.touch()
         mock_client._file_content = "old"  # Update mock to return correct content

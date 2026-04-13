@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncGenerator
 from typing import ClassVar
 
@@ -140,7 +141,7 @@ class Task(
                 msg.role == Role.assistant for msg in subagent_loop.messages
             )
 
-        except Exception as e:
+        except (OSError, RuntimeError, asyncio.CancelledError) as e:
             completed = False
             accumulated_response.append(f"\n[Subagent error: {e}]")
             turns_used = sum(

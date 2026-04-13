@@ -54,7 +54,7 @@ class ProjectContextProvider:
                     for line in gitignore_path.read_text(encoding="utf-8").splitlines()
                     if line.strip() and not line.startswith("#")
                 )
-            except Exception as e:
+            except OSError as e:
                 print(f"Warning: Could not read .gitignore: {e}", file=sys.stderr)
 
         default_patterns = [
@@ -178,7 +178,7 @@ class ProjectContextProvider:
                 ):
                     break
 
-        except Exception as e:
+        except OSError as e:
             lines.append(f"Error building structure: {e}")
 
         structure = header + "\n".join(lines)
@@ -290,7 +290,7 @@ class ProjectContextProvider:
             return "Git operations timed out (large repository)"
         except subprocess.CalledProcessError:
             return "Not a git repository or git not available"
-        except Exception as e:
+        except (OSError, subprocess.SubprocessError) as e:
             return f"Error getting git status: {e}"
 
     def get_full_context(self) -> str:

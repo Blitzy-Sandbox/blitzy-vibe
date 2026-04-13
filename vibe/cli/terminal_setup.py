@@ -173,7 +173,7 @@ def _setup_vscode_like_terminal(terminal: Terminal) -> SetupResult:
             requires_restart=True,
         )
 
-    except Exception as e:
+    except OSError as e:
         return SetupResult(
             success=False,
             terminal=terminal,
@@ -263,7 +263,7 @@ def _setup_iterm2() -> SetupResult:
             terminal=Terminal.ITERM2,
             message=f"Failed to configure iTerm2: {e.stderr}",
         )
-    except Exception as e:
+    except (OSError, subprocess.SubprocessError) as e:
         return SetupResult(
             success=False,
             terminal=Terminal.ITERM2,
@@ -319,7 +319,7 @@ return {{
             requires_restart=True,
         )
 
-    except Exception as e:
+    except OSError as e:
         return SetupResult(
             success=False,
             terminal=Terminal.WEZTERM,
@@ -377,7 +377,7 @@ def _setup_ghostty() -> SetupResult:
             requires_restart=True,
         )
 
-    except Exception as e:
+    except OSError as e:
         return SetupResult(
             success=False,
             terminal=Terminal.GHOSTTY,

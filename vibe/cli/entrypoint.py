@@ -125,7 +125,7 @@ def check_and_resolve_trusted_folder() -> None:
         is_folder_trusted = ask_trust_folder(cwd)
     except (KeyboardInterrupt, EOFError, TrustDialogQuitException):
         sys.exit(0)
-    except Exception as e:
+    except OSError as e:
         rprint(f"[yellow]Error showing trust dialog: {e}[/]")
         return
 

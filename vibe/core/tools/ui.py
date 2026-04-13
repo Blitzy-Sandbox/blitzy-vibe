@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from pydantic import BaseModel, Field
 
 if TYPE_CHECKING:
+    from vibe.core.protocols import ToolLike
     from vibe.core.types import ToolCallEvent, ToolResultEvent
 
 
@@ -32,7 +33,7 @@ class ToolUIData[TArgs: BaseModel, TResult: BaseModel](Protocol):
 
 
 class ToolUIDataAdapter:
-    def __init__(self, tool_class: Any) -> None:
+    def __init__(self, tool_class: type[ToolLike]) -> None:
         self.tool_class = tool_class
         self.ui_data_class: type[ToolUIData[Any, Any]] | None = (
             tool_class if issubclass(tool_class, ToolUIData) else None

@@ -58,9 +58,9 @@ def _shorten_preview(texts: list[str]) -> str:
     return dense_text
 
 
-def copy_selection_to_clipboard(app: App) -> None:
-    selected_texts = []
-
+def _gather_selected_texts(app: App) -> list[str]:
+    """Collect selected text from all widgets with active selections."""
+    selected_texts: list[str] = []
     for widget in app.query("*"):
         if not hasattr(widget, "text_selection") or not widget.text_selection:
             continue
@@ -69,7 +69,7 @@ def copy_selection_to_clipboard(app: App) -> None:
 
         try:
             result = widget.get_selection(selection)
-        except Exception:
+        except (OSError, ValueError, AttributeError, TypeError):
             continue
 
         if not result:
@@ -78,24 +78,35 @@ def copy_selection_to_clipboard(app: App) -> None:
         selected_text, _ = result
         if selected_text.strip():
             selected_texts.append(selected_text)
+    return selected_texts
 
+
+def _try_clipboard_copy(
+    text: str, copy_fns: list[Callable[[str], None]]
+) -> bool:
+    """Attempt to copy text using available clipboard strategies.
+
+    Returns True if at least one strategy succeeded.
+    """
+    success = False
+    for copy_fn in copy_fns:
+        try:
+            copy_fn(text)
+        except (OSError, subprocess.SubprocessError, RuntimeError):
+            pass
+        else:
+            success = True
+    return success
+
+
+def copy_selection_to_clipboard(app: App) -> None:
+    """Copy the current text selection to the system clipboard."""
+    selected_texts = _gather_selected_texts(app)
     if not selected_texts:
         return
 
     combined_text = "\n".join(selected_texts)
-
-    success = False
-    copy_fns = _get_copy_fns(app)
-
-    for copy_fn in copy_fns:
-        try:
-            copy_fn(combined_text)
-        except:
-            pass
-        else:
-            success = True
-
-    if success:
+    if _try_clipboard_copy(combined_text, _get_copy_fns(app)):
         app.notify(
             f'"{_shorten_preview(selected_texts)}" copied to clipboard',
             severity="information",

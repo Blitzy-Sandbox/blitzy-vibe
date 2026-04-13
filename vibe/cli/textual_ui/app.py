@@ -2,16 +2,16 @@ from __future__ import annotations
 
 import asyncio
 from enum import StrEnum, auto
-
 from pathlib import Path
 import subprocess
 import time
 from typing import Any, ClassVar, assert_never, cast
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 from textual.app import App, ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, VerticalScroll
+from textual.css.query import NoMatches
 from textual.events import AppBlur, AppFocus, MouseUp
 from textual.widget import Widget
 from textual.widgets import Static
@@ -20,7 +20,10 @@ from vibe import __version__ as CORE_VERSION
 from vibe.cli.clipboard import copy_selection_to_clipboard
 from vibe.cli.commands import CommandRegistry
 from vibe.cli.terminal_setup import setup_terminal
+from vibe.cli.textual_ui.handlers.approval_handler import ApprovalHandler
+from vibe.cli.textual_ui.handlers.command_handler import CommandHandler
 from vibe.cli.textual_ui.handlers.event_handler import EventHandler
+from vibe.cli.textual_ui.handlers.history_handler import HistoryHandler
 from vibe.cli.textual_ui.terminal_theme import (
     TERMINAL_THEME_NAME,
     capture_terminal_theme,
@@ -37,7 +40,6 @@ from vibe.cli.textual_ui.widgets.messages import (
     BashOutputMessage,
     ErrorMessage,
     InterruptMessage,
-
     ReasoningMessage,
     StreamingMessageBase,
     UserCommandMessage,
@@ -62,30 +64,17 @@ from vibe.cli.update_notifier import (
     should_show_whats_new,
 )
 from vibe.cli.update_notifier.update import do_update
-from vibe.core.agent_loop import AgentLoop
+from vibe.core.agent_loop import AgentLoop, AgentLoopError
 from vibe.core.agents import AgentProfile
 from vibe.core.autocompletion.path_prompt_adapter import render_path_prompt
 from vibe.core.config import VibeConfig
 from vibe.core.paths.config_paths import HISTORY_FILE
-from vibe.core.session.session_loader import SessionLoader
-from vibe.core.tools.base import ToolPermission
 from vibe.core.tools.builtins.ask_user_question import (
     AskUserQuestionArgs,
     AskUserQuestionResult,
 )
-from vibe.core.types import (
-    AgentStats,
-    ApprovalResponse,
-    LLMMessage,
-    RateLimitError,
-    Role,
-)
-from vibe.core.utils import (
-    CancellationReason,
-    get_user_cancellation_message,
-    is_dangerous_directory,
-    logger,
-)
+from vibe.core.types import AgentStats, ApprovalResponse, LLMMessage, RateLimitError
+from vibe.core.utils import is_dangerous_directory, logger
 
 
 class BottomApp(StrEnum):
@@ -102,9 +91,11 @@ class BottomApp(StrEnum):
     Question = auto()
 
 
-class VibeApp(App):  # noqa: PLR0904
+class VibeApp(App):  # noqa: PLR0904 — Textual requires public on_*/action_* handlers
     ENABLE_COMMAND_PALETTE = False
     CSS_PATH = "app.tcss"
+
+    _DOUBLE_ESC_THRESHOLD: ClassVar[float] = 0.2
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("ctrl+c", "clear_quit", "Quit", show=False),
@@ -126,7 +117,6 @@ class VibeApp(App):  # noqa: PLR0904
         update_notifier: UpdateGateway | None = None,
         update_cache_repository: UpdateCacheRepository | None = None,
         current_version: str = CORE_VERSION,
-
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
@@ -161,6 +151,11 @@ class VibeApp(App):  # noqa: PLR0904
         self._last_escape_time: float | None = None
         self._terminal_theme = capture_terminal_theme()
 
+        # Composed handlers (R2: Composition over inheritance)
+        self._command_handler = CommandHandler(self)
+        self._approval_handler = ApprovalHandler(self)
+        self._history_handler = HistoryHandler(self)
+
     @property
     def config(self) -> VibeConfig:
         return self.agent_loop.config
@@ -182,7 +177,7 @@ class VibeApp(App):  # noqa: PLR0904
                 command_registry=self.commands,
                 id="input-container",
                 safety=self.agent_loop.agent_profile.safety,
-                skill_entries_getter=self._get_skill_entries,
+                skill_entries_getter=self._command_handler._get_skill_entries,
             )
 
         with Horizontal(id="bottom-bar"):
@@ -271,36 +266,17 @@ class VibeApp(App):  # noqa: PLR0904
     async def on_approval_app_approval_granted(
         self, message: ApprovalApp.ApprovalGranted
     ) -> None:
-        if self._pending_approval and not self._pending_approval.done():
-            self._pending_approval.set_result((ApprovalResponse.YES, None))
-
-        await self._switch_to_input_app()
+        await self._approval_handler.on_approval_granted(message)
 
     async def on_approval_app_approval_granted_always_tool(
         self, message: ApprovalApp.ApprovalGrantedAlwaysTool
     ) -> None:
-        self._set_tool_permission_always(
-            message.tool_name, save_permanently=message.save_permanently
-        )
-
-        if self._pending_approval and not self._pending_approval.done():
-            self._pending_approval.set_result((ApprovalResponse.YES, None))
-
-        await self._switch_to_input_app()
+        await self._approval_handler.on_approval_granted_always_tool(message)
 
     async def on_approval_app_approval_rejected(
         self, message: ApprovalApp.ApprovalRejected
     ) -> None:
-        if self._pending_approval and not self._pending_approval.done():
-            feedback = str(
-                get_user_cancellation_message(CancellationReason.OPERATION_CANCELLED)
-            )
-            self._pending_approval.set_result((ApprovalResponse.NO, feedback))
-
-        await self._switch_to_input_app()
-
-        if self._loading_widget and self._loading_widget.parent:
-            await self._remove_loading_widget()
+        await self._approval_handler.on_approval_rejected(message)
 
     async def on_question_app_answered(self, message: QuestionApp.Answered) -> None:
         if self._pending_question and not self._pending_question.done():
@@ -327,14 +303,14 @@ class VibeApp(App):  # noqa: PLR0904
         try:
             todo_area = self.query_one("#todo-area")
             todo_area.add_class("loading-active")
-        except Exception:
+        except NoMatches:
             pass
 
     def _hide_todo_area(self) -> None:
         try:
             todo_area = self.query_one("#todo-area")
             todo_area.remove_class("loading-active")
-        except Exception:
+        except NoMatches:
             pass
 
     def on_config_app_setting_changed(self, message: ConfigApp.SettingChanged) -> None:
@@ -376,32 +352,8 @@ class VibeApp(App):  # noqa: PLR0904
             for widget in children[:compact_index]:
                 await widget.remove()
 
-    def _set_tool_permission_always(
-        self, tool_name: str, save_permanently: bool = False
-    ) -> None:
-        self.agent_loop.set_tool_permission(
-            tool_name, ToolPermission.ALWAYS, save_permanently
-        )
-
     async def _handle_command(self, user_input: str) -> bool:
-        if command := self.commands.find_command(user_input):
-            await self._mount_and_scroll(UserMessage(user_input))
-            handler = getattr(self, command.handler)
-            if asyncio.iscoroutinefunction(handler):
-                await handler()
-            else:
-                handler()
-            return True
-        return False
-
-    def _get_skill_entries(self) -> list[tuple[str, str]]:
-        if not self.agent_loop:
-            return []
-        return [
-            (f"/{name}", info.description)
-            for name, info in self.agent_loop.skill_manager.available_skills.items()
-            if info.user_invocable
-        ]
+        return await self._command_handler.handle_command(user_input)
 
     async def _handle_skill(self, user_input: str) -> bool:
         if not user_input.startswith("/"):
@@ -459,7 +411,7 @@ class VibeApp(App):  # noqa: PLR0904
                     collapsed=self._tools_collapsed,
                 )
             )
-        except Exception as e:
+        except (OSError, subprocess.SubprocessError) as e:
             await self._mount_and_scroll(
                 ErrorMessage(f"Command failed: {e}", collapsed=self._tools_collapsed)
             )
@@ -475,64 +427,14 @@ class VibeApp(App):  # noqa: PLR0904
             )
 
     async def _rebuild_history_from_messages(self) -> None:
-        if all(msg.role == Role.system for msg in self.agent_loop.messages):
-            return
-
-        messages_area = self.query_one("#messages")
-        # Don't rebuild if messages are already displayed
-        if messages_area.children:
-            return
-
-        tool_call_map: dict[str, str] = {}
-
-        with self.batch_update():
-            for msg in self.agent_loop.messages:
-                if msg.role == Role.system:
-                    continue
-
-                match msg.role:
-                    case Role.user:
-                        if msg.content:
-                            await messages_area.mount(UserMessage(msg.content))
-
-                    case Role.assistant:
-                        await self._mount_history_assistant_message(
-                            msg, messages_area, tool_call_map
-                        )
-
-                    case Role.tool:
-                        tool_name = msg.name or tool_call_map.get(
-                            msg.tool_call_id or "", "tool"
-                        )
-                        await messages_area.mount(
-                            ToolResultMessage(
-                                tool_name=tool_name,
-                                content=msg.content,
-                                collapsed=self._tools_collapsed,
-                            )
-                        )
+        await self._history_handler.rebuild_history()
 
     async def _mount_history_assistant_message(
         self, msg: LLMMessage, messages_area: Widget, tool_call_map: dict[str, str]
     ) -> None:
-        if msg.content:
-            widget = AssistantMessage(msg.content)
-            await messages_area.mount(widget)
-            await widget.write_initial_content()
-            await widget.stop_stream()
-
-        if not msg.tool_calls:
-            return
-
-        for tool_call in msg.tool_calls:
-            tool_name = tool_call.function.name or "unknown"
-            if tool_call.id:
-                tool_call_map[tool_call.id] = tool_name
-
-            await messages_area.mount(ToolCallMessage(tool_name=tool_name))
-
-    def _is_tool_enabled_in_main_agent(self, tool: str) -> bool:
-        return tool in self.agent_loop.tool_manager.available_tools
+        await self._history_handler.mount_history_assistant_message(
+            msg, messages_area, tool_call_map
+        )
 
     async def _approval_callback(
         self, tool: str, args: BaseModel, tool_call_id: str
@@ -540,7 +442,7 @@ class VibeApp(App):  # noqa: PLR0904
         # Auto-approve only if parent is in auto-approve mode AND tool is enabled
         # This ensures subagents respect the main agent's tool restrictions
         if self.agent_loop and self.agent_loop.config.auto_approve:
-            if self._is_tool_enabled_in_main_agent(tool):
+            if tool in self.agent_loop.tool_manager.available_tools:
                 return (ApprovalResponse.YES, None)
 
         self._pending_approval = asyncio.Future()
@@ -588,7 +490,7 @@ class VibeApp(App):  # noqa: PLR0904
             if self.event_handler:
                 self.event_handler.stop_current_tool_call()
             raise
-        except Exception as e:
+        except (OSError, RuntimeError, RateLimitError, AgentLoopError) as e:
             if self._loading_widget and self._loading_widget.parent:
                 await self._loading_widget.remove()
             if self.event_handler:
@@ -596,7 +498,9 @@ class VibeApp(App):  # noqa: PLR0904
 
             message = str(e)
             if isinstance(e, RateLimitError):
-                message = "Rate limits exceeded. Please wait a moment before trying again."
+                message = (
+                    "Rate limits exceeded. Please wait a moment before trying again."
+                )
 
             await self._mount_and_scroll(
                 ErrorMessage(message, collapsed=self._tools_collapsed)
@@ -639,29 +543,6 @@ class VibeApp(App):  # noqa: PLR0904
 
         self._interrupt_requested = False
 
-    async def _show_help(self) -> None:
-        help_text = self.commands.get_help_text()
-        await self._mount_and_scroll(UserCommandMessage(help_text))
-
-    async def _show_status(self) -> None:
-        stats = self.agent_loop.stats
-        status_text = f"""## Agent Statistics
-
-- **Steps**: {stats.steps:,}
-- **Session Prompt Tokens**: {stats.session_prompt_tokens:,}
-- **Session Completion Tokens**: {stats.session_completion_tokens:,}
-- **Session Total LLM Tokens**: {stats.session_total_llm_tokens:,}
-- **Last Turn Tokens**: {stats.last_turn_total_tokens:,}
-- **Cost**: ${stats.session_cost:.4f}
-"""
-        await self._mount_and_scroll(UserCommandMessage(status_text))
-
-    async def _show_config(self) -> None:
-        """Switch to the configuration app in the bottom panel."""
-        if self._current_bottom_app == BottomApp.Config:
-            return
-        await self._switch_to_config_app()
-
     async def _reload_config(self) -> None:
         try:
             base_config = VibeConfig.load()
@@ -669,7 +550,7 @@ class VibeApp(App):  # noqa: PLR0904
             await self.agent_loop.reload_with_initial_messages(base_config=base_config)
 
             await self._mount_and_scroll(UserCommandMessage("Configuration reloaded."))
-        except Exception as e:
+        except (OSError, ValidationError) as e:
             await self._mount_and_scroll(
                 ErrorMessage(
                     f"Failed to reload config: {e}", collapsed=self._tools_collapsed
@@ -692,34 +573,10 @@ class VibeApp(App):  # noqa: PLR0904
             chat = self.query_one("#chat", VerticalScroll)
             chat.scroll_home(animate=False)
 
-        except Exception as e:
+        except (OSError, RuntimeError) as e:
             await self._mount_and_scroll(
                 ErrorMessage(
                     f"Failed to clear history: {e}", collapsed=self._tools_collapsed
-                )
-            )
-
-    async def _show_log_path(self) -> None:
-        if not self.agent_loop.session_logger.enabled:
-            await self._mount_and_scroll(
-                ErrorMessage(
-                    "Session logging is disabled in configuration.",
-                    collapsed=self._tools_collapsed,
-                )
-            )
-            return
-
-        try:
-            log_path = str(self.agent_loop.session_logger.session_dir)
-            await self._mount_and_scroll(
-                UserCommandMessage(
-                    f"## Current Log Directory\n\n`{log_path}`\n\nYou can send this directory to share your interaction."
-                )
-            )
-        except Exception as e:
-            await self._mount_and_scroll(
-                ErrorMessage(
-                    f"Failed to get log path: {e}", collapsed=self._tools_collapsed
                 )
             )
 
@@ -764,7 +621,7 @@ class VibeApp(App):  # noqa: PLR0904
         except asyncio.CancelledError:
             compact_msg.set_error("Compaction interrupted")
             raise
-        except Exception as e:
+        except (OSError, RuntimeError, RateLimitError, AgentLoopError) as e:
             compact_msg.set_error(str(e))
         finally:
             self._agent_running = False
@@ -772,21 +629,8 @@ class VibeApp(App):  # noqa: PLR0904
             if self.event_handler:
                 self.event_handler.current_compact = None
 
-    def _get_session_resume_info(self) -> str | None:
-        if not self.agent_loop.session_logger.enabled:
-            return None
-        if not self.agent_loop.session_logger.session_id:
-            return None
-        session_config = self.agent_loop.session_logger.session_config
-        session_path = SessionLoader.does_session_exist(
-            self.agent_loop.session_logger.session_id, session_config
-        )
-        if session_path is None:
-            return None
-        return self.agent_loop.session_logger.session_id[:8]
-
     async def _exit_app(self) -> None:
-        self.exit(result=self._get_session_resume_info())
+        self.exit(result=self._history_handler._get_session_resume_info())
 
     async def _setup_terminal(self) -> None:
         result = setup_terminal()
@@ -851,7 +695,7 @@ class VibeApp(App):  # noqa: PLR0904
             if app != BottomApp.Input:
                 try:
                     await self.query_one(f"#{app.value}-app").remove()
-                except Exception:
+                except NoMatches:
                     pass
 
         if self._agent_indicator:
@@ -876,7 +720,7 @@ class VibeApp(App):  # noqa: PLR0904
                     self.query_one(QuestionApp).focus()
                 case app:
                     assert_never(app)
-        except Exception:
+        except NoMatches:
             pass
 
     def action_interrupt(self) -> None:
@@ -886,7 +730,7 @@ class VibeApp(App):  # noqa: PLR0904
             try:
                 config_app = self.query_one(ConfigApp)
                 config_app.action_close()
-            except Exception:
+            except NoMatches:
                 pass
             self._last_escape_time = None
             return
@@ -895,7 +739,7 @@ class VibeApp(App):  # noqa: PLR0904
             try:
                 approval_app = self.query_one(ApprovalApp)
                 approval_app.action_reject()
-            except Exception:
+            except NoMatches:
                 pass
             self._last_escape_time = None
             return
@@ -904,7 +748,7 @@ class VibeApp(App):  # noqa: PLR0904
             try:
                 question_app = self.query_one(QuestionApp)
                 question_app.action_cancel()
-            except Exception:
+            except NoMatches:
                 pass
             self._last_escape_time = None
             return
@@ -912,7 +756,7 @@ class VibeApp(App):  # noqa: PLR0904
         if (
             self._current_bottom_app == BottomApp.Input
             and self._last_escape_time is not None
-            and (current_time - self._last_escape_time) < 0.2  # noqa: PLR2004
+            and (current_time - self._last_escape_time) < self._DOUBLE_ESC_THRESHOLD
         ):
             try:
                 input_widget = self.query_one(ChatInputContainer)
@@ -920,7 +764,7 @@ class VibeApp(App):  # noqa: PLR0904
                     input_widget.value = ""
                     self._last_escape_time = None
                     return
-            except Exception:
+            except NoMatches:
                 pass
 
         if self._agent_running:
@@ -940,7 +784,7 @@ class VibeApp(App):  # noqa: PLR0904
         try:
             for error_msg in self.query(ErrorMessage):
                 error_msg.set_collapsed(self._tools_collapsed)
-        except Exception:
+        except NoMatches:
             pass
 
     async def action_toggle_todo(self) -> None:
@@ -989,14 +833,14 @@ class VibeApp(App):  # noqa: PLR0904
         if self._agent_task and not self._agent_task.done():
             self._agent_task.cancel()
 
-        self.exit(result=self._get_session_resume_info())
+        self.exit(result=self._history_handler._get_session_resume_info())
 
     def action_scroll_chat_up(self) -> None:
         try:
             chat = self.query_one("#chat", VerticalScroll)
             chat.scroll_relative(y=-5, animate=False)
             self._auto_scroll = False
-        except Exception:
+        except NoMatches:
             pass
 
     def action_scroll_chat_down(self) -> None:
@@ -1005,7 +849,7 @@ class VibeApp(App):  # noqa: PLR0904
             chat.scroll_relative(y=5, animate=False)
             if self._is_scrolled_to_bottom(chat):
                 self._auto_scroll = True
-        except Exception:
+        except NoMatches:
             pass
 
     async def _show_dangerous_directory_warning(self) -> None:
@@ -1107,14 +951,14 @@ class VibeApp(App):  # noqa: PLR0904
         try:
             threshold = 3
             return scroll_view.scroll_y >= (scroll_view.max_scroll_y - threshold)
-        except Exception:
+        except (AttributeError, TypeError):
             return True
 
     def _scroll_to_bottom(self) -> None:
         try:
             chat = self.query_one("#chat")
             chat.scroll_end(animate=False)
-        except Exception:
+        except NoMatches:
             pass
 
     def _scroll_to_bottom_deferred(self) -> None:
@@ -1128,7 +972,7 @@ class VibeApp(App):  # noqa: PLR0904
             if chat.max_scroll_y == 0:
                 return
             chat.anchor()
-        except Exception:
+        except NoMatches:
             pass
 
     def _schedule_update_notification(self) -> None:
@@ -1155,7 +999,7 @@ class VibeApp(App):  # noqa: PLR0904
                 timeout=10,
             )
             return
-        except Exception as exc:
+        except (OSError, RuntimeError) as exc:
             logger.debug("Version update check failed", exc_info=exc)
             return
 

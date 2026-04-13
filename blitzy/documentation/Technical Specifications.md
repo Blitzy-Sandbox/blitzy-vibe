@@ -6,212 +6,324 @@
 
 ### 0.1.1 Core Refactoring Objective
 
-Based on the prompt, the Blitzy platform understands that the refactoring objective is to **rebrand** a Python CLI application currently named "Mistral Vibe" (by Mistral AI) to "Blitzy Agent" (by Blitzy) and **replace the terminal color theme** with a purple-centric palette anchored on `#5B39F3`. The application is a coding agent built with Python 3.12, Textual, Pydantic, and httpx. The source lives under the `vibe/` package directory, which remains unchanged.
+Based on the prompt, the Blitzy platform understands that the refactoring objective is to perform a **structural decomposition, circular dependency resolution, and exception-safety hardening** of the production `vibe/` Python package — the Blitzy Agent CLI codebase — without altering any runtime behavior, public APIs, or configuration schemas.
 
-- **Refactoring type:** Brand identity replacement + Visual theme migration
-- **Target repository:** Same repository (in-place brand string substitution and theme color replacement)
-- **The `vibe/` package directory name is explicitly preserved** — only user-facing strings, CLI metadata, documentation, configuration defaults, and color definitions are affected
+- **Refactoring type:** Code structure decomposition + Design pattern application (Composition over Inheritance) + Exception-safety hardening + Dead code removal + Complexity reduction
+- **Target repository:** Same repository — all changes occur in-place within the existing `vibe/` package namespace
+- **Codebase scope:** 126 Python source files, ~19,445 lines of code, organized across `vibe/core/`, `vibe/cli/`, `vibe/acp/`, and `vibe/setup/`
 
-The refactoring goals, listed with enhanced clarity:
+The refactoring addresses five concrete structural problems identified through static analysis:
 
-- **Brand string replacement:** Every user-visible occurrence of "Mistral Vibe", "mistral-vibe", "Mistral AI" (as the app author, not the API provider), "vibe" (as CLI command), "vibe-acp" (as CLI command), "~/.vibe/", "VIBE_*" (env var prefix), "vibe@mistral.ai", and "mistralai/mistral-vibe" (GitHub) must be replaced with their Blitzy equivalents per the brand mapping table
-- **Theme color replacement:** The existing orange/amber welcome banner gradient and terminal-derived theme must be replaced with a cohesive purple-centric Textual CSS palette anchored on accent `#5B39F3`
-- **Preserve all functional behavior:** No refactoring, no feature additions, no "while we're here" improvements — every edit is a direct brand string replacement or theme color change
+| Problem Category | Count | Primary Locations |
+|---|---|---|
+| God classes (classes with excessive method counts) | 5 production classes | `app.py`, `agent_loop.py`, `question_app.py`, `text_area.py`, `welcome.py` |
+| Circular import cycles | 12 cycles | Rooted in `types.py ↔ tools/base.py ↔ config.py ↔ tools/manager.py` |
+| Bare `except Exception` blocks in production code | 90 instances across 36 files | Concentrated in `vibe/acp/`, `vibe/core/`, `vibe/cli/textual_ui/` |
+| Deep nesting violations (≥5 levels) | 3 instances | `app.py:565`, `agent_loop.py:737`, `test_acp.py:303` |
+| Dead code | 1 instance | `vibe/core/tools/base.py:128` (unreachable `yield` after `raise`) |
 
-Implicit requirements surfaced:
+The implicit requirements surfaced by this specification are:
 
-- All test assertion strings containing old branding must be updated to match the new brand, while test logic and test structure remain untouched
-- The PyPI project name changes from `mistral-vibe` to `blitzy-agent`, requiring updates in update-notifier gateways, install scripts, and CI/CD workflows
-- The Zed extension manifest (`distribution/zed/extension.toml`) must be updated with the new brand identity and GitHub URLs
-- The GitHub Action (`action.yml`) must reflect "Blitzy Agent" in its name, description, author, and step names
-- The `VIBE_HOME` environment variable override logic in `vibe/core/paths/global_paths.py` must change to `BLITZY_HOME`
-- The history file greeting "Hello Vibe!" must become "Hello Blitzy!"
-- The onboarding welcome screen text "Mistral Vibe" and trust dialog message must reflect "Blitzy Agent"
+- All public API contracts must remain **binary-compatible** — callers of `AgentLoop.act()`, `BaseTool.invoke()`, `VibeConfig` fields, `VibeApp.__init__()`, and `VibeAcpAgentLoop` protocol messages experience zero changes
+- Extracted methods must use **verbatim move + thin delegation** — no logic rewrites during extraction
+- All composition must use **`__init__` injection** — no mixins, no subclass inheritance from extracted handlers
+- The protocol module (`vibe/core/protocols.py`) must be **import-pure** — zero internal `vibe.*` runtime imports
+- All `vibe/core/tools/builtins/prompts/*.md` files are immutable
+- `pyproject.toml` entry points (`[project.scripts]`) are immutable
+- No new dependencies may be added to `pyproject.toml`
 
 ### 0.1.2 Technical Interpretation
 
 This refactoring translates to the following technical transformation strategy:
 
-- **Layer 1 — Package metadata:** Update `pyproject.toml` (project name, description, keywords, authors, URLs, script entry points), `flake.nix` description, and `action.yml`
-- **Layer 2 — CLI entry points:** The script entry points change from `vibe`/`vibe-acp` to `blitzy`/`blitzy-acp` in `pyproject.toml`, but the Python module paths (`vibe.cli.entrypoint:main`, `vibe.acp.entrypoint:main`) remain identical since the `vibe/` package directory is preserved
-- **Layer 3 — Configuration defaults:** `env_prefix` in `SettingsConfigDict` changes from `VIBE_` to `BLITZY_`, the default home directory changes from `~/.vibe` to `~/.blitzy`, and all user-facing config path references update accordingly
-- **Layer 4 — User-facing strings:** argparse descriptions, banner text, commit signatures, user-agent strings, onboarding messages, system prompt branding, and ACP `Implementation` metadata are updated
-- **Layer 5 — Visual theme:** The `app.tcss` file receives a purple-centric palette, `terminal_theme.py` adopts purple accent defaults, and the `WelcomeBanner` widget replaces the orange gradient with a purple gradient anchored on `#5B39F3`
-- **Layer 6 — Documentation:** `README.md`, `CONTRIBUTING.md`, `AGENTS.md`, `CHANGELOG.md`, `docs/*.md`, and `vibe/whats_new.md` have all "Mistral Vibe" / "Mistral AI" references replaced
-- **Layer 7 — Tests:** Only assertion strings containing old branding are updated; no test logic or structure changes
+**Architecture Mapping — Current State → Target State:**
 
-The brand mapping is deterministic and fully enumerated:
+```mermaid
+graph LR
+    subgraph Current["Current Architecture"]
+        AL_C["AgentLoop<br/>31 methods<br/>monolithic"]
+        VA_C["VibeApp<br/>29 methods<br/>monolithic"]
+        QA_C["QuestionApp<br/>45 methods"]
+        CT_C["ChatTextArea<br/>29 methods"]
+        WB_C["WelcomeBanner<br/>20 methods"]
+        CI_C["Circular Imports<br/>types↔base↔config↔manager"]
+        EX_C["90 bare except Exception<br/>across 36 files"]
+    end
 
-| Current Value | Replacement Value | Context |
-|---|---|---|
-| `Mistral Vibe` | `Blitzy Agent` | Display name everywhere |
-| `mistral-vibe` | `blitzy-agent` | PyPI package name, CLI references, URLs |
-| `Mistral AI` | `Blitzy` | Author/org name (app context only) |
-| `vibe` (CLI cmd) | `blitzy` | Script entry point |
-| `vibe-acp` (CLI cmd) | `blitzy-acp` | ACP script entry point |
-| `~/.vibe/` | `~/.blitzy/` | Global config home directory |
-| `VIBE_*` (env prefix) | `BLITZY_*` | Pydantic settings env_prefix |
-| `VIBE_HOME` | `BLITZY_HOME` | Home directory override env var |
-| `vibe@mistral.ai` | `agent@blitzy.com` | Commit co-author email |
-| `mistralai/mistral-vibe` | `blitzy/blitzy-agent` | GitHub repository path |
-| `@mistralai/mistral-vibe` | `@blitzy/blitzy-agent` | ACP Implementation name |
-| `Mistral-Vibe/{version}` | `Blitzy-Agent/{version}` | HTTP User-Agent string |
-| `mistral-vibe-update-notifier` | `blitzy-agent-update-notifier` | GitHub gateway User-Agent |
-| `Hello Vibe!` | `Hello Blitzy!` | History file greeting |
+    subgraph Target["Target Architecture"]
+        AL_T["AgentLoop ≤15<br/>+ ToolExecutor<br/>+ TurnRunner"]
+        VA_T["VibeApp ≤25<br/>+ CommandHandler<br/>+ ApprovalHandler<br/>+ HistoryHandler"]
+        QA_T["QuestionApp ≤20"]
+        CT_T["ChatTextArea ≤15"]
+        WB_T["WelcomeBanner ≤12"]
+        PR_T["protocols.py<br/>Breaking cycles"]
+        EX_T["0 bare except Exception<br/>Specific types only"]
+    end
+
+    AL_C --> AL_T
+    VA_C --> VA_T
+    QA_C --> QA_T
+    CT_C --> CT_T
+    WB_C --> WB_T
+    CI_C --> PR_T
+    EX_C --> EX_T
+```
+
+**Transformation Rules:**
+
+- **God Class Decomposition:** Extract cohesive method groups into standalone handler classes composed via `__init__` injection. Original class retains one-liner delegation methods that forward to the injected handler.
+- **Circular Import Resolution:** Introduce `vibe/core/protocols.py` containing `typing.Protocol` subclasses (`BackendLike`, `ToolLike`, `ConfigLike`, `ToolManagerLike`) that break the `types.py ↔ tools/base.py ↔ config.py ↔ tools/manager.py` cycle. Modules reference protocols instead of concrete implementations at type-annotation time.
+- **Exception Narrowing:** Replace each `except Exception` with the narrowest applicable exception type(s) from the mapping provided — `OSError`, `FileNotFoundError`, `httpx.HTTPError`, `asyncio.CancelledError`, `pydantic.ValidationError`, `json.JSONDecodeError`, `ConnectionError`, `subprocess.SubprocessError`, `tomllib.TOMLDecodeError`, `ImportError`, `PermissionError` — selected per-module based on the actual operations performed.
+- **Dead Code Removal:** Remove the unreachable `yield` statement at `vibe/core/tools/base.py:128` following the `raise NotImplementedError`.
+- **Deep Nesting Resolution:** Extract inner logic into named helper methods or use early-return guard clauses to reduce nesting depth below 5 levels at `app.py:565`, `agent_loop.py:737`.
+
+**Execution Batching (Sequential, Single Phase):**
+
+The user specifies 4 sequential batches as a logical ordering for correctness dependencies. The Blitzy platform will execute the entire refactor in **one phase** but will respect the logical dependency ordering within that phase: circular import resolution first, then AgentLoop decomposition, then VibeApp decomposition, then remaining god classes + exception narrowing + cleanup.
 
 
 ## 0.2 Source Analysis
 
 ### 0.2.1 Comprehensive Source File Discovery
 
-Every source file requiring modification has been identified through exhaustive `grep` searches for brand strings (`Mistral Vibe`, `mistral-vibe`, `Mistral AI`, `vibe@mistral`, `mistralai/mistral-vibe`, `Hello Vibe`, `VIBE_`, `~/.vibe`), manual review of config/path modules, theme files, test assertions, documentation, and CI/CD pipelines. The files are organized by modification category.
+The following source files have been identified through systematic repository inspection as requiring refactoring. Every file is listed explicitly — nothing is deferred or pending.
 
-**Brand String Source Files (vibe/ package):**
+**God Class Files (5 classes requiring decomposition):**
 
-| File | Lines Affected | Brand Strings Found |
+| File | Class | Current Methods | Target Methods | Lines | Action |
+|---|---|---|---|---|---|
+| `vibe/core/agent_loop.py` | `AgentLoop` | 17 | ≤15 | 956 | Extract `ToolExecutor` and `TurnRunner` |
+| `vibe/cli/textual_ui/app.py` | `VibeApp` | 29 | ≤25 | 1,215 | Extract `CommandHandler`, `ApprovalHandler`, `HistoryHandler` |
+| `vibe/cli/textual_ui/widgets/question_app.py` | `QuestionApp` | 45 | ≤20 | 479 | Extract helper classes for selection logic |
+| `vibe/cli/textual_ui/widgets/chat_input/text_area.py` | `ChatTextArea` | 29 | ≤15 | 358 | Extract completion and history navigation logic |
+| `vibe/cli/textual_ui/widgets/welcome.py` | `WelcomeBanner` | 20 | ≤12 | 283 | Extract animation and metadata rendering logic |
+
+**Circular Import Chain Files (core cycle):**
+
+| File | Lines | Role in Cycle | Key Imports |
+|---|---|---|---|
+| `vibe/core/types.py` | 393 | Defines core data contracts (`LLMMessage`, `ToolCall`, etc.) | No internal `vibe.*` imports |
+| `vibe/core/tools/base.py` | 336 | Defines `BaseTool`, `BaseToolConfig`, `InvokeContext` | Imports `ToolStreamEvent` from `types.py` |
+| `vibe/core/config.py` | 605 | Defines `VibeConfig`, nested config models | Imports `BaseToolConfig` from `tools/base.py` |
+| `vibe/core/tools/manager.py` | 341 | Defines `ToolManager` discovery and caching | Imports `BaseTool`, `BaseToolConfig` from `tools/base.py` |
+| `vibe/core/tools/mcp.py` | 358 | MCP proxy tool generation | Imports from `tools/base.py` |
+| `vibe/core/tools/ui.py` | 68 | Tool UI display models | Defines `ToolUIData` Protocol |
+| `vibe/core/llm/types.py` | 120 | Defines `BackendLike` Protocol | Imports from `vibe/core/types.py`, TYPE_CHECKING `config.py` |
+
+**Bare `except Exception` Files (36 files, 90 instances in production code):**
+
+| Module Pattern | Files | Instance Count |
 |---|---|---|
-| `vibe/__init__.py` | Line 6 | Version string — no brand change needed (version stays `2.0.2`) but reviewed for branding |
-| `vibe/core/config.py` | Line 279, Line 402, Line 452 | `mistral-vibe-cli-latest` (model name — PRESERVED), `env_prefix="VIBE_"` → `BLITZY_`, comment about `VIBE_*` |
-| `vibe/core/system_prompt.py` | Lines 364-369 | `Mistral Vibe` in commit signature, `vibe@mistral.ai` co-author email |
-| `vibe/core/utils.py` | Line 151 | `Mistral-Vibe/{version}` user-agent string |
-| `vibe/core/paths/global_paths.py` | Lines 19, 22-25, 28, 38 | `_DEFAULT_VIBE_HOME = Path.home() / ".vibe"`, `VIBE_HOME` env var name, `vibe.log` file name |
-| `vibe/core/paths/config_paths.py` | Lines 26, 29, 37, 45, 53 | `cwd / ".vibe" / basename` references (local config directory) |
-| `vibe/core/prompts/cli.md` | Line 1 | `Mistral Vibe, a CLI coding-agent built by Mistral AI` |
-| `vibe/core/prompts/tests.md` | Line 1 | `You are Vibe` |
-| `vibe/cli/entrypoint.py` | Lines 21, 77, 109 | `Mistral Vibe interactive CLI` description, `~/.vibe/agents/` help text, `vibe` reference in error msg |
-| `vibe/cli/cli.py` | Lines 70-71 | `Hello Vibe!\n` history file greeting |
-| `vibe/cli/textual_ui/app.py` | Lines 1224, 1252, 1264-1265 | `mistral-vibe` in update messages and PyPI gateway, `vibe --continue` resume hint |
-| `vibe/cli/textual_ui/terminal_theme.py` | Entire file | Theme color logic (functional — receives purple palette changes) |
-| `vibe/cli/textual_ui/app.tcss` | Entire file | Textual CSS stylesheet (uses `$variable` tokens — functional review for theme) |
-| `vibe/cli/textual_ui/widgets/welcome.py` | Lines 47-48, 97 | Orange gradient `TARGET_COLORS`, `Mistral Vibe v{version}` banner text |
-| `vibe/cli/update_notifier/update.py` | Line 125 | `uv tool upgrade mistral-vibe`, `brew upgrade mistral-vibe` |
-| `vibe/cli/update_notifier/adapters/github_update_gateway.py` | Line 34 | `mistral-vibe-update-notifier` User-Agent |
-| `vibe/acp/acp_agent_loop.py` | Lines 135, 140, 158-159 | `Mistral Vibe` in auth method, ACP `Implementation` name/title |
-| `vibe/acp/entrypoint.py` | Lines 25, 45 | `Mistral Vibe in ACP mode` description, `Hello Vibe!` greeting |
-| `vibe/setup/onboarding/__init__.py` | Line 54 | `Mistral Vibe CLI` in setup complete message, `"vibe"` command reference |
-| `vibe/setup/onboarding/screens/welcome.py` | Line 15 | `WELCOME_HIGHLIGHT = "Mistral Vibe"` |
-| `vibe/setup/onboarding/screens/api_key.py` | Lines 21, 24 | `Mistral AI Studio` (API provider — PRESERVED), `mistralai/mistral-vibe` GitHub URL |
-| `vibe/setup/trusted_folders/trust_folder_dialog.py` | Line 61 | `Mistral Vibe setup` trust dialog message |
-| `vibe/whats_new.md` | Line 3 | `.vibe` folder reference |
+| `vibe/acp/acp_agent_loop.py` | 1 | 2 |
+| `vibe/acp/entrypoint.py` | 1 | 2 |
+| `vibe/acp/tools/base.py` | 1 | 1 |
+| `vibe/acp/tools/builtins/*.py` | 4 (bash, read_file, search_replace, write_file) | 7 |
+| `vibe/cli/textual_ui/app.py` | 1 | 19 |
+| `vibe/cli/textual_ui/widgets/chat_input/container.py` | 1 | 1 |
+| `vibe/cli/textual_ui/widgets/welcome.py` | 1 | 1 |
+| `vibe/cli/cli.py` | 1 | 3 |
+| `vibe/cli/entrypoint.py` | 1 | 1 |
+| `vibe/cli/clipboard.py` | 1 | 1 |
+| `vibe/cli/terminal_setup.py` | 1 | 4 |
+| `vibe/cli/autocompletion/path_completion.py` | 1 | 1 |
+| `vibe/cli/update_notifier/adapters/pypi_update_gateway.py` | 1 | 2 |
+| `vibe/core/agent_loop.py` | 1 | 4 |
+| `vibe/core/config.py` | 1 | 1 |
+| `vibe/core/utils.py` | 1 | 2 |
+| `vibe/core/system_prompt.py` | 1 | 3 |
+| `vibe/core/agents/manager.py` | 1 | 1 |
+| `vibe/core/skills/manager.py` | 1 | 1 |
+| `vibe/core/session/session_loader.py` | 1 | 1 |
+| `vibe/core/session/session_logger.py` | 1 | 5 |
+| `vibe/core/session/session_migration.py` | 1 | 1 |
+| `vibe/core/llm/exceptions.py` | 1 | 1 |
+| `vibe/core/autocompletion/file_indexer/ignore_rules.py` | 1 | 1 |
+| `vibe/core/autocompletion/file_indexer/indexer.py` | 1 | 2 |
+| `vibe/core/autocompletion/file_indexer/watcher.py` | 1 | 1 |
+| `vibe/core/tools/builtins/bash.py` | 1 | 1 |
+| `vibe/core/tools/builtins/grep.py` | 1 | 1 |
+| `vibe/core/tools/builtins/search_replace.py` | 1 | 3 |
+| `vibe/core/tools/builtins/task.py` | 1 | 1 |
+| `vibe/core/tools/builtins/write_file.py` | 1 | 1 |
+| `vibe/core/tools/manager.py` | 1 | 6 |
+| `vibe/core/tools/mcp.py` | 1 | 4 |
 
-**Documentation Files:**
+**Deep Nesting Violation Files:**
 
-| File | Brand Strings Found |
-|---|---|
-| `README.md` | `Mistral Vibe` (multiple), `mistral-vibe` (PyPI/GitHub), `Mistral AI`, `~/.vibe/` paths, `vibe` command references |
-| `CONTRIBUTING.md` | `Mistral Vibe` (multiple), `mistral-vibe` directory reference |
-| `CHANGELOG.md` | `mistral-vibe` in changelog entry |
-| `AGENTS.md` | No brand references found — no changes needed |
-| `docs/README.md` | `Mistral Vibe` documentation title, `mistral-vibe` GitHub link |
-| `docs/acp-setup.md` | `Mistral Vibe` (multiple), `vibe-acp` tool references, ACP config snippets |
-
-**CI/CD and Distribution Files:**
-
-| File | Brand Strings Found |
-|---|---|
-| `pyproject.toml` | Lines 2, 4, 8, 52-55, 70-71 — name, description, authors, URLs, scripts |
-| `action.yml` | Lines 2-4, 43, 49-50 — name, description, author, step names |
-| `flake.nix` | Line 2 — `Mistral Vibe!` description |
-| `vibe-acp.spec` | Line 47 — `name='vibe-acp'` display name |
-| `.github/CODEOWNERS` | Line 4 — `@mistralai/mistral-vibe` |
-| `.github/ISSUE_TEMPLATE/bug-report.yml` | Lines 2, 16, 48-49 — `Mistral Vibe` references |
-| `.github/ISSUE_TEMPLATE/config.yml` | Lines 5, 7-8 — `Mistral AI`, `mistral-vibe` URL |
-| `.github/ISSUE_TEMPLATE/feature-request.yml` | Lines 2, 16, 31 — `Mistral Vibe` references |
-| `.github/workflows/build-and-upload.yml` | Line 21 — `mistralai/mistral-vibe` repo check |
-| `.github/workflows/release.yml` | Lines 14, 44, 50, 58 — `mistral-vibe` references |
-| `distribution/zed/extension.toml` | Throughout — `mistral-vibe` id, `Mistral Vibe` name, `Mistral AI` author, URLs |
-| `scripts/install.sh` | Lines 3-4, 82-85 — `Mistral Vibe` installation references |
-| `scripts/prepare_release.py` | Line 26 — `mistralai/mistral-vibe.git` remote URL |
-
-**Test Files (assertion strings only):**
-
-| File | Lines Affected | Brand Strings Found |
+| File | Location | Complexity Score |
 |---|---|---|
-| `tests/conftest.py` | Line 27 | `mistral-vibe-cli-latest` (model name — PRESERVED) |
-| `tests/acp/test_initialize.py` | Lines 28, 51, 59, 65 | `@mistralai/mistral-vibe`, `Mistral Vibe` title, `Mistral Vibe Setup` label |
-| `tests/acp/test_acp.py` | Line 76 | `mistral-vibe-cli-latest` (model name — PRESERVED) |
-| `tests/onboarding/test_run_onboarding.py` | Line 60 | `Mistral Vibe CLI` in onboarding complete assertion |
-| `tests/update_notifier/test_pypi_update_gateway.py` | Lines 29, 39, 46, 49, 51, 60, 74, 81, 96, 105, 149 | `mistral-vibe` PyPI project name, `mistral_vibe` wheel filenames |
-| `tests/update_notifier/test_ui_update_notification.py` | Lines 116, 210, 405 | `mistral-vibe` in update notification messages |
+| `vibe/cli/textual_ui/app.py` | `_handle_agent_loop_turn` (~line 565) | C901 = 11 |
+| `vibe/cli/textual_ui/app.py` | `action_interrupt` (~line 882) | C901 = 11 |
+| `vibe/core/agent_loop.py` | `_stream_assistant_events` (~line 369) | C901 = 11 |
+| `vibe/core/agent_loop.py` | `_handle_tool_calls` (~line 428) | C901 = 11 |
+
+**Dead Code File:**
+
+| File | Location | Description |
+|---|---|---|
+| `vibe/core/tools/base.py` | Line 128 | Unreachable `yield` statement after `raise NotImplementedError` in abstract `run()` method |
 
 ### 0.2.2 Current Structure Mapping
 
 ```
-Current project structure (brand-affected files highlighted):
-.
-├── pyproject.toml                          ← brand: name, description, authors, URLs, scripts
-├── action.yml                              ← brand: name, description, author, step names
-├── flake.nix                               ← brand: description
-├── vibe-acp.spec                           ← brand: exe name
-├── README.md                               ← brand: throughout
-├── CONTRIBUTING.md                         ← brand: throughout
-├── CHANGELOG.md                            ← brand: entry reference
-├── AGENTS.md                               ← no brand changes needed
-├── .github/
-│   ├── CODEOWNERS                          ← brand: team reference
-│   ├── ISSUE_TEMPLATE/
-│   │   ├── bug-report.yml                  ← brand: references
-│   │   ├── config.yml                      ← brand: URLs
-│   │   └── feature-request.yml             ← brand: references
-│   └── workflows/
-│       ├── build-and-upload.yml            ← brand: repo check
-│       └── release.yml                     ← brand: PyPI/Zed references
-├── distribution/
-│   └── zed/
-│       └── extension.toml                  ← brand: throughout
-├── docs/
-│   ├── README.md                           ← brand: title, links
-│   └── acp-setup.md                        ← brand: references, config snippets
-├── scripts/
-│   ├── install.sh                          ← brand: install references
-│   └── prepare_release.py                  ← brand: remote URL
-├── vibe/
-│   ├── __init__.py                         ← reviewed (no brand change needed)
-│   ├── whats_new.md                        ← brand: .vibe reference
-│   ├── core/
-│   │   ├── config.py                       ← brand: env_prefix, comment
-│   │   ├── system_prompt.py                ← brand: commit signature
-│   │   ├── utils.py                        ← brand: user-agent
-│   │   ├── paths/
-│   │   │   ├── global_paths.py             ← brand: ~/.vibe, VIBE_HOME
-│   │   │   └── config_paths.py             ← brand: .vibe/ local paths
-│   │   └── prompts/
-│   │       ├── cli.md                      ← brand: identity prompt
-│   │       └── tests.md                    ← brand: identity text
-│   ├── cli/
-│   │   ├── entrypoint.py                   ← brand: argparse description
-│   │   ├── cli.py                          ← brand: Hello Vibe greeting
-│   │   ├── textual_ui/
-│   │   │   ├── app.py                      ← brand: update messages, PyPI name
-│   │   │   ├── app.tcss                    ← theme: CSS palette
-│   │   │   ├── terminal_theme.py           ← theme: color derivation
-│   │   │   └── widgets/
-│   │   │       └── welcome.py              ← brand+theme: banner text, gradient colors
-│   │   └── update_notifier/
-│   │       ├── update.py                   ← brand: upgrade commands
-│   │       └── adapters/
-│   │           └── github_update_gateway.py ← brand: User-Agent
-│   ├── acp/
-│   │   ├── acp_agent_loop.py               ← brand: Implementation name/title, auth
-│   │   └── entrypoint.py                   ← brand: argparse description, greeting
-│   └── setup/
-│       ├── onboarding/
-│       │   ├── __init__.py                 ← brand: setup complete message
-│       │   └── screens/
-│       │       ├── welcome.py              ← brand: WELCOME_HIGHLIGHT
-│       │       └── api_key.py              ← brand: GitHub URL
-│       └── trusted_folders/
-│           └── trust_folder_dialog.py      ← brand: trust dialog message
-└── tests/
-    ├── conftest.py                         ← model name preserved
-    ├── acp/
-    │   ├── test_initialize.py              ← brand: assertion strings
-    │   └── test_acp.py                     ← model name preserved
+Current vibe/ Structure (126 Python files, ~19,445 lines):
+vibe/
+├── __init__.py
+├── whats_new.md
+├── acp/
+│   ├── __init__.py
+│   ├── acp_agent_loop.py          (550 lines — 2 bare excepts)
+│   ├── entrypoint.py              (81 lines — 2 bare excepts)
+│   ├── utils.py
+│   └── tools/
+│       ├── __init__.py
+│       ├── base.py                (100 lines — 1 bare except)
+│       ├── session_update.py
+│       └── builtins/
+│           ├── bash.py            (134 lines — 3 bare excepts)
+│           ├── read_file.py       (54 lines — 1 bare except)
+│           ├── search_replace.py  (129 lines — 2 bare excepts)
+│           ├── todo.py            (65 lines — 0 bare excepts)
+│           └── write_file.py      (98 lines — 1 bare except)
+├── cli/
+│   ├── __init__.py
+│   ├── cli.py                     (3 bare excepts)
+│   ├── clipboard.py               (1 bare except)
+│   ├── commands.py
+│   ├── entrypoint.py              (1 bare except)
+│   ├── history_manager.py
+│   ├── terminal_setup.py          (4 bare excepts)
+│   ├── autocompletion/
+│   │   ├── __init__.py
+│   │   ├── base.py
+│   │   ├── path_completion.py     (1 bare except)
+│   │   └── slash_command.py
+│   ├── plan_offer/
+│   │   ├── adapters/http_whoami_gateway.py
+│   │   ├── decide_plan_offer.py
+│   │   └── ports/whoami_gateway.py
+│   ├── textual_ui/
+│   │   ├── __init__.py
+│   │   ├── app.py                 (1215 lines — GOD CLASS: 29 methods, 19 bare excepts)
+│   │   ├── external_editor.py
+│   │   ├── terminal_theme.py
+│   │   ├── handlers/
+│   │   │   ├── __init__.py
+│   │   │   └── event_handler.py   (164 lines)
+│   │   └── widgets/
+│   │       ├── __init__.py
+│   │       ├── agent_indicator.py
+│   │       ├── approval_app.py
+│   │       ├── compact.py
+│   │       ├── config_app.py
+│   │       ├── context_progress.py
+│   │       ├── loading.py
+│   │       ├── messages.py
+│   │       ├── no_markup_static.py
+│   │       ├── path_display.py
+│   │       ├── question_app.py    (479 lines — GOD CLASS: 45 methods)
+│   │       ├── spinner.py
+│   │       ├── status_message.py
+│   │       ├── tool_widgets.py
+│   │       ├── tools.py
+│   │       ├── utils.py
+│   │       ├── welcome.py         (283 lines — GOD CLASS: 20 methods, 1 bare except)
+│   │       └── chat_input/
+│   │           ├── __init__.py
+│   │           ├── body.py
+│   │           ├── completion_manager.py
+│   │           ├── completion_popup.py
+│   │           ├── container.py   (1 bare except)
+│   │           └── text_area.py   (358 lines — GOD CLASS: 29 methods)
+│   └── update_notifier/
+│       ├── __init__.py
+│       ├── update.py
+│       ├── whats_new.py
+│       ├── adapters/
+│       │   ├── filesystem_update_cache_repository.py
+│       │   ├── github_update_gateway.py
+│       │   └── pypi_update_gateway.py  (2 bare excepts)
+│       └── ports/
+│           ├── update_cache_repository.py
+│           └── update_gateway.py
+├── core/
+│   ├── __init__.py
+│   ├── agent_loop.py              (956 lines — GOD CLASS: 17 methods, 4 bare excepts)
+│   ├── config.py                  (605 lines — 1 bare except, circular import participant)
+│   ├── middleware.py
+│   ├── output_formatters.py
+│   ├── programmatic.py
+│   ├── system_prompt.py           (3 bare excepts)
+│   ├── trusted_folders.py
+│   ├── types.py                   (393 lines — circular import participant)
+│   ├── utils.py                   (2 bare excepts)
+│   ├── agents/
+│   │   ├── __init__.py
+│   │   ├── manager.py             (1 bare except)
+│   │   └── models.py
+│   ├── autocompletion/
+│   │   ├── __init__.py
+│   │   ├── completers.py
+│   │   ├── fuzzy.py
+│   │   ├── path_prompt.py
+│   │   ├── path_prompt_adapter.py
+│   │   └── file_indexer/
+│   │       ├── __init__.py
+│   │       ├── ignore_rules.py    (1 bare except)
+│   │       ├── indexer.py         (2 bare excepts)
+│   │       ├── store.py
+│   │       └── watcher.py         (1 bare except)
+│   ├── llm/
+│   │   ├── __init__.py
+│   │   ├── exceptions.py          (1 bare except)
+│   │   ├── format.py
+│   │   ├── types.py               (120 lines — defines BackendLike Protocol)
+│   │   └── backend/
+│   │       ├── __init__.py
+│   │       ├── factory.py
+│   │       ├── generic.py
+│   │       └── mistral.py
+│   ├── paths/
+│   │   ├── __init__.py
+│   │   ├── config_paths.py
+│   │   └── global_paths.py
+│   ├── prompts/
+│   │   └── __init__.py
+│   ├── session/
+│   │   ├── session_loader.py      (1 bare except)
+│   │   ├── session_logger.py      (5 bare excepts)
+│   │   └── session_migration.py   (1 bare except)
+│   ├── skills/
+│   │   ├── __init__.py
+│   │   ├── manager.py             (1 bare except)
+│   │   ├── models.py
+│   │   └── parser.py
+│   └── tools/
+│       ├── base.py                (336 lines — circular import, dead code at :128)
+│       ├── manager.py             (341 lines — circular import, 6 bare excepts)
+│       ├── mcp.py                 (358 lines — 4 bare excepts)
+│       ├── ui.py                  (68 lines)
+│       └── builtins/
+│           ├── ask_user_question.py
+│           ├── bash.py            (1 bare except)
+│           ├── grep.py            (1 bare except)
+│           ├── read_file.py
+│           ├── search_replace.py  (3 bare excepts)
+│           ├── task.py            (1 bare except)
+│           ├── todo.py
+│           ├── write_file.py      (1 bare except)
+│           └── prompts/ (IMMUTABLE — 9 .md files)
+└── setup/
     ├── onboarding/
-    │   └── test_run_onboarding.py          ← brand: assertion strings
-    └── update_notifier/
-        ├── test_pypi_update_gateway.py     ← brand: assertion strings
-        └── test_ui_update_notification.py  ← brand: assertion strings
+    │   ├── __init__.py
+    │   ├── base.py
+    │   └── screens/
+    │       ├── __init__.py
+    │       ├── api_key.py
+    │       ├── theme_selection.py
+    │       └── welcome.py
+    └── trusted_folders/
+        └── trust_folder_dialog.py
 ```
 
 
@@ -219,569 +331,853 @@ Current project structure (brand-affected files highlighted):
 
 ### 0.3.1 Exhaustively In Scope
 
-**Source transformations (brand string replacement):**
-- `vibe/core/config.py` — `env_prefix` change from `VIBE_` to `BLITZY_`, documentation comment about `VIBE_*` variables
-- `vibe/core/system_prompt.py` — commit signature text (`Mistral Vibe`, `vibe@mistral.ai`)
-- `vibe/core/utils.py` — user-agent string `Mistral-Vibe/{version}`
-- `vibe/core/paths/global_paths.py` — `_DEFAULT_VIBE_HOME`, `VIBE_HOME` env var, `vibe.log` file name
-- `vibe/core/paths/config_paths.py` — `.vibe/` local config directory references
-- `vibe/core/prompts/cli.md` — system prompt identity text
-- `vibe/core/prompts/tests.md` — test persona text
-- `vibe/cli/entrypoint.py` — argparse description, help text with `~/.vibe/` path
-- `vibe/cli/cli.py` — `Hello Vibe!` history greeting
-- `vibe/cli/textual_ui/app.py` — `mistral-vibe` in update messages and PyPI gateway
-- `vibe/cli/textual_ui/widgets/welcome.py` — banner text, color gradient constants
-- `vibe/cli/update_notifier/update.py` — upgrade command strings
-- `vibe/cli/update_notifier/adapters/github_update_gateway.py` — User-Agent header
-- `vibe/acp/acp_agent_loop.py` — ACP `Implementation` name/title, auth method descriptions
-- `vibe/acp/entrypoint.py` — argparse description, history greeting
-- `vibe/setup/onboarding/__init__.py` — setup complete message
-- `vibe/setup/onboarding/screens/welcome.py` — `WELCOME_HIGHLIGHT` constant
-- `vibe/setup/onboarding/screens/api_key.py` — GitHub documentation URL
-- `vibe/setup/trusted_folders/trust_folder_dialog.py` — trust dialog message
-- `vibe/whats_new.md` — `.vibe` folder reference
+**Source Transformations — God Class Decomposition:**
+- `vibe/core/agent_loop.py` — Extract `ToolExecutor` and `TurnRunner`; reduce to ≤15 methods
+- `vibe/cli/textual_ui/app.py` — Extract `CommandHandler`, `ApprovalHandler`, `HistoryHandler`; reduce to ≤25 methods
+- `vibe/cli/textual_ui/widgets/question_app.py` — Decompose to ≤20 methods
+- `vibe/cli/textual_ui/widgets/chat_input/text_area.py` — Decompose to ≤15 methods
+- `vibe/cli/textual_ui/widgets/welcome.py` — Decompose to ≤12 methods
 
-**Theme color updates:**
-- `vibe/cli/textual_ui/app.tcss` — full Textual CSS palette replacement with purple-centric colors
-- `vibe/cli/textual_ui/terminal_theme.py` — theme color derivation defaults and fallback accent
-- `vibe/cli/textual_ui/widgets/welcome.py` — `TARGET_COLORS` gradient and `BORDER_TARGET_COLOR` replacement with purple palette
+**Source Transformations — Circular Import Resolution:**
+- `vibe/core/types.py` — Update to reference protocols where needed
+- `vibe/core/tools/base.py` — Replace concrete type references with protocol references; remove dead code at line 128
+- `vibe/core/config.py` — Break circular chain by using protocol types at annotation level
+- `vibe/core/tools/manager.py` — Use protocol types to decouple from direct imports
+- `vibe/core/tools/mcp.py` — Update import chain dependencies
+- `vibe/core/tools/ui.py` — Align with protocol-first architecture
+- `vibe/core/llm/types.py` — `BackendLike` protocol already exists here; verify alignment
 
-**Test assertion updates:**
-- `tests/acp/test_initialize.py` — `@mistralai/mistral-vibe`, `Mistral Vibe` title, `Mistral Vibe Setup` label assertions
-- `tests/onboarding/test_run_onboarding.py` — `Mistral Vibe CLI` assertion
-- `tests/update_notifier/test_pypi_update_gateway.py` — `mistral-vibe` project name, `mistral_vibe` wheel filename assertions
-- `tests/update_notifier/test_ui_update_notification.py` — `mistral-vibe` in update notification assertions
+**Source Transformations — New Module Creation:**
+- `vibe/core/protocols.py` — New: shared Protocol classes (`BackendLike`, `ToolLike`, `ConfigLike`, `ToolManagerLike`)
+- `vibe/core/tool_executor.py` — New: extracted from AgentLoop
+- `vibe/core/turn_runner.py` — New: extracted from AgentLoop
+- `vibe/cli/textual_ui/handlers/__init__.py` — Update: add exports for new handler modules
+- `vibe/cli/textual_ui/handlers/command_handler.py` — New: extracted from VibeApp
+- `vibe/cli/textual_ui/handlers/approval_handler.py` — New: extracted from VibeApp
+- `vibe/cli/textual_ui/handlers/history_handler.py` — New: extracted from VibeApp
 
-**Configuration and packaging updates:**
-- `pyproject.toml` — name, description, keywords, authors, URLs, scripts
-- `action.yml` — GitHub Action name, description, author, step names
-- `flake.nix` — description string
-- `vibe-acp.spec` — exe display name
+**Source Transformations — Exception Narrowing (36 files, 90 instances):**
+- `vibe/acp/acp_agent_loop.py` — 2 instances → `httpx.HTTPError`, `asyncio.CancelledError`, `json.JSONDecodeError`, `ConnectionError`
+- `vibe/acp/entrypoint.py` — 2 instances → `OSError`, `tomllib.TOMLDecodeError`, `ImportError`
+- `vibe/acp/tools/base.py` — 1 instance → `OSError`, `pydantic.ValidationError`
+- `vibe/acp/tools/builtins/bash.py` — 3 instances → `OSError`, `FileNotFoundError`, `asyncio.CancelledError`
+- `vibe/acp/tools/builtins/read_file.py` — 1 instance → `OSError`, `FileNotFoundError`, `asyncio.CancelledError`
+- `vibe/acp/tools/builtins/search_replace.py` — 2 instances → `OSError`, `FileNotFoundError`, `asyncio.CancelledError`
+- `vibe/acp/tools/builtins/write_file.py` — 1 instance → `OSError`, `FileNotFoundError`, `asyncio.CancelledError`
+- `vibe/cli/textual_ui/app.py` — 19 instances → `OSError`, `subprocess.SubprocessError`, `asyncio.CancelledError`
+- `vibe/cli/textual_ui/widgets/chat_input/container.py` — 1 instance → `OSError`
+- `vibe/cli/textual_ui/widgets/welcome.py` — 1 instance → `OSError`
+- `vibe/cli/cli.py` — 3 instances → `OSError`, `KeyboardInterrupt`
+- `vibe/cli/entrypoint.py` — 1 instance → `OSError`
+- `vibe/cli/clipboard.py` — 1 instance → `OSError`, `subprocess.SubprocessError`
+- `vibe/cli/terminal_setup.py` — 4 instances → `OSError`, `subprocess.SubprocessError`
+- `vibe/cli/autocompletion/path_completion.py` — 1 instance → `OSError`
+- `vibe/cli/update_notifier/adapters/pypi_update_gateway.py` — 2 instances → `httpx.HTTPError`, `json.JSONDecodeError`, `OSError`
+- `vibe/core/agent_loop.py` — 4 instances → `httpx.HTTPError`, `asyncio.CancelledError`, `json.JSONDecodeError`
+- `vibe/core/config.py` — 1 instance → `OSError`, `pydantic.ValidationError`
+- `vibe/core/utils.py` — 2 instances → `OSError`, `asyncio.CancelledError`
+- `vibe/core/system_prompt.py` — 3 instances → `OSError`, `subprocess.SubprocessError`
+- `vibe/core/agents/manager.py` — 1 instance → `OSError`, `ImportError`
+- `vibe/core/skills/manager.py` — 1 instance → `OSError`, `ImportError`
+- `vibe/core/session/session_loader.py` — 1 instance → `OSError`, `json.JSONDecodeError`
+- `vibe/core/session/session_logger.py` — 5 instances → `OSError`, `json.JSONDecodeError`, `PermissionError`
+- `vibe/core/session/session_migration.py` — 1 instance → `OSError`, `json.JSONDecodeError`
+- `vibe/core/llm/exceptions.py` — 1 instance → `httpx.HTTPError`
+- `vibe/core/autocompletion/file_indexer/ignore_rules.py` — 1 instance → `OSError`
+- `vibe/core/autocompletion/file_indexer/indexer.py` — 2 instances → `OSError`
+- `vibe/core/autocompletion/file_indexer/watcher.py` — 1 instance → `OSError`
+- `vibe/core/tools/builtins/bash.py` — 1 instance → `OSError`, `subprocess.SubprocessError`
+- `vibe/core/tools/builtins/grep.py` — 1 instance → `OSError`, `subprocess.SubprocessError`
+- `vibe/core/tools/builtins/search_replace.py` — 3 instances → `OSError`, `pydantic.ValidationError`
+- `vibe/core/tools/builtins/task.py` — 1 instance → `OSError`, `asyncio.CancelledError`
+- `vibe/core/tools/builtins/write_file.py` — 1 instance → `OSError`, `PermissionError`
+- `vibe/core/tools/manager.py` — 6 instances → `OSError`, `ImportError`, `pydantic.ValidationError`
+- `vibe/core/tools/mcp.py` — 4 instances → `httpx.HTTPError`, `OSError`, `asyncio.CancelledError`
 
-**Documentation updates:**
-- `README.md` — all `Mistral Vibe`, `mistral-vibe`, `Mistral AI`, `~/.vibe/`, `vibe` command references
-- `CONTRIBUTING.md` — all brand references
-- `CHANGELOG.md` — `mistral-vibe` entry reference
-- `docs/README.md` — title and link references
-- `docs/acp-setup.md` — brand references and ACP config snippet examples
+**Test Updates (import path corrections only):**
+- `tests/**/*.py` — 102 test files; any importing from refactored modules need path updates
+- Files importing `AgentLoop`: 21 test files
+- Files importing `VibeApp`: 9 test files
+- Files importing from `vibe.core.types`: 30 test files
+- Files importing from `vibe.core.tools.base`: 20 test files
+- Files importing from `vibe.core.config`: 34 test files
 
-**CI/CD and distribution updates:**
-- `.github/CODEOWNERS` — team reference
-- `.github/ISSUE_TEMPLATE/bug-report.yml` — brand references
-- `.github/ISSUE_TEMPLATE/config.yml` — URLs and brand references
-- `.github/ISSUE_TEMPLATE/feature-request.yml` — brand references
-- `.github/workflows/build-and-upload.yml` — repository check string
-- `.github/workflows/release.yml` — PyPI and Zed references
-- `distribution/zed/extension.toml` — id, name, author, URLs, agent server names
-- `scripts/install.sh` — installation references
-- `scripts/prepare_release.py` — remote URL
+**Configuration Updates:**
+- `pyproject.toml` — No changes permitted (R10: no new dependencies)
 
-**Import path corrections:**
-- No import path changes required — the `vibe/` package directory is preserved
-- Only string-literal brand replacements within existing files
+**Documentation Updates:**
+- `README.md` — Update if structural changes affect documented paths
+- `AGENTS.md` — Verify coding standards alignment
+- `CONTRIBUTING.md` — Update if module references change
+
+**Deep Nesting Resolution:**
+- `vibe/cli/textual_ui/app.py:565` — `_handle_agent_loop_turn` (C901 = 11)
+- `vibe/cli/textual_ui/app.py:882` — `action_interrupt` (C901 = 11)
+- `vibe/core/agent_loop.py:369` — `_stream_assistant_events` (C901 = 11)
+- `vibe/core/agent_loop.py:428` — `_handle_tool_calls` (C901 = 11)
+
+**Cognitive Complexity Reduction (15 current C901 violations):**
+- All 15 functions flagged by `ruff check --select C901 vibe/` must have complexity ≤ baseline count
 
 ### 0.3.2 Explicitly Out of Scope
 
-The following are explicitly excluded from modification per the user's preservation requirements:
-
-- **Internal Python identifiers:** `VibeConfig`, `VibeApp`, `AgentLoop`, `VibeAcpAgentLoop`, or any class/function/variable name
-- **The `vibe/` package directory name** — the directory remains `vibe/`, not renamed
-- **Internal constants:** `VIBE_ROOT` (defined in `vibe/__init__.py`), `VIBE_STOP_EVENT_TAG`, `VIBE_WARNING_TAG` (defined in `vibe/core/utils.py`)
-- **External API provider references:**
-  - `"mistral"` as a provider name in `DEFAULT_PROVIDERS` (refers to the Mistral API service)
-  - `MISTRAL_API_KEY` environment variable (external API credential)
-  - `api.mistral.ai` and `codestral.mistral.ai` (external API endpoints)
-  - `Mistral AI Studio` label in `vibe/setup/onboarding/screens/api_key.py` line 21 (refers to the external console)
-  - The `mistralai` Python SDK package dependency
-- **LLM model names:** `mistral-vibe-cli-latest`, `devstral-2`, `devstral-small`, `devstral-small-latest`, `devstral` (these are model identifiers, not app branding)
-- **Functional behavior:** No tool, agent, middleware, backend, or protocol behavior changes
-- **Config file formats:** TOML config format, session log format, ACP protocol schema unchanged
-- **Test logic or test structure:** Only assertion strings with old branding are updated
-- **The `tests/conftest.py` base config model name** `mistral-vibe-cli-latest` — this is a model name, not app branding
-- **The `tests/acp/test_acp.py` model name check** — `mistral-vibe-cli-latest` is a model identifier
+- **Behavioral changes** — No runtime logic modifications during extraction; code is moved verbatim
+- **Feature additions** — No new features, capabilities, or integrations
+- **Public API modifications** — `AgentLoop.act()`, `BaseTool.invoke()`, `VibeConfig` fields, `VibeApp.__init__()`, `VibeAcpAgentLoop` protocol messages remain unchanged
+- **Configuration schema changes** — TOML schema, environment variable names, and dotenv format are immutable
+- **Dependency changes** — `pyproject.toml` `[project.dependencies]` and `[project.optional-dependencies]` must not be modified
+- **Prompt file changes** — All `vibe/core/tools/builtins/prompts/*.md` files are immutable
+- **Entry point changes** — `pyproject.toml` `[project.scripts]` section is immutable
+- **Test logic changes** — Test files are updated only for import path corrections, not for logic changes
+- **`FakeClient` (16 methods)** and **`TestTrustedFoldersManager` (18 methods)** — These are in `tests/` directory (test-only), not production code
+- **`vibe/setup/`** — No refactoring targets identified in this module
+- **New suppression annotations** — `# noqa`, `# type: ignore`, `# pragma: no cover` additions are prohibited (R8)
 
 
 ## 0.4 Target Design
 
 ### 0.4.1 Refactored Structure Planning
 
-The target structure preserves the identical directory layout — no files are moved, created, or deleted. Only in-place content modifications are applied. The complete list of files with their modification nature:
+The target architecture preserves the existing `vibe/` package namespace while introducing 7 new Python modules and modifying 36+ existing files. All new modules use composition over inheritance and export their public API via `__all__`.
 
 ```
-Target (all files are in-place updates — no structural changes):
-.
-├── pyproject.toml                          ← UPDATE: name→blitzy-agent, scripts→blitzy/blitzy-acp
-├── action.yml                              ← UPDATE: name→Blitzy Agent, author→Blitzy
-├── flake.nix                               ← UPDATE: description→Blitzy Agent
-├── vibe-acp.spec                           ← UPDATE: name→blitzy-acp
-├── README.md                               ← UPDATE: all brand strings
-├── CONTRIBUTING.md                         ← UPDATE: all brand strings
-├── CHANGELOG.md                            ← UPDATE: brand string in entry
-├── .github/
-│   ├── CODEOWNERS                          ← UPDATE: team→@blitzy/blitzy-agent
-│   ├── ISSUE_TEMPLATE/
-│   │   ├── bug-report.yml                  ← UPDATE: brand strings
-│   │   ├── config.yml                      ← UPDATE: URLs and brand strings
-│   │   └── feature-request.yml             ← UPDATE: brand strings
-│   └── workflows/
-│       ├── build-and-upload.yml            ← UPDATE: repo check string
-│       └── release.yml                     ← UPDATE: PyPI/Zed references
-├── distribution/
-│   └── zed/
-│       └── extension.toml                  ← UPDATE: id, name, author, all URLs
-├── docs/
-│   ├── README.md                           ← UPDATE: brand strings and links
-│   └── acp-setup.md                        ← UPDATE: brand strings and config examples
-├── scripts/
-│   ├── install.sh                          ← UPDATE: brand and install references
-│   └── prepare_release.py                  ← UPDATE: remote URL
-├── vibe/
-│   ├── whats_new.md                        ← UPDATE: .vibe → .blitzy
-│   ├── core/
-│   │   ├── config.py                       ← UPDATE: env_prefix VIBE_→BLITZY_
-│   │   ├── system_prompt.py                ← UPDATE: commit signature branding
-│   │   ├── utils.py                        ← UPDATE: user-agent string
-│   │   ├── paths/
-│   │   │   ├── global_paths.py             ← UPDATE: ~/.vibe→~/.blitzy, VIBE_HOME→BLITZY_HOME
-│   │   │   └── config_paths.py             ← UPDATE: .vibe/→.blitzy/ local paths
-│   │   └── prompts/
-│   │       ├── cli.md                      ← UPDATE: identity prompt text
-│   │       └── tests.md                    ← UPDATE: identity persona text
-│   ├── cli/
-│   │   ├── entrypoint.py                   ← UPDATE: argparse description, help text
-│   │   ├── cli.py                          ← UPDATE: Hello Vibe!→Hello Blitzy!
-│   │   ├── textual_ui/
-│   │   │   ├── app.py                      ← UPDATE: package name in update messages
-│   │   │   ├── app.tcss                    ← UPDATE: purple-centric palette
-│   │   │   ├── terminal_theme.py           ← UPDATE: accent color defaults
-│   │   │   └── widgets/
-│   │   │       └── welcome.py              ← UPDATE: banner text + purple gradient
-│   │   └── update_notifier/
-│   │       ├── update.py                   ← UPDATE: upgrade command strings
-│   │       └── adapters/
-│   │           └── github_update_gateway.py ← UPDATE: User-Agent
-│   ├── acp/
-│   │   ├── acp_agent_loop.py               ← UPDATE: Implementation name/title
-│   │   └── entrypoint.py                   ← UPDATE: argparse description, greeting
-│   └── setup/
-│       ├── onboarding/
-│       │   ├── __init__.py                 ← UPDATE: setup complete message
-│       │   └── screens/
-│       │       ├── welcome.py              ← UPDATE: WELCOME_HIGHLIGHT
-│       │       └── api_key.py              ← UPDATE: GitHub URL only
-│       └── trusted_folders/
-│           └── trust_folder_dialog.py      ← UPDATE: trust dialog message
-└── tests/
-    ├── acp/
-    │   └── test_initialize.py              ← UPDATE: assertion strings
-    ├── onboarding/
-    │   └── test_run_onboarding.py          ← UPDATE: assertion strings
-    └── update_notifier/
-        ├── test_pypi_update_gateway.py     ← UPDATE: assertion strings
-        └── test_ui_update_notification.py  ← UPDATE: assertion strings
+Target vibe/ Structure (additions and modifications highlighted):
+vibe/
+├── __init__.py
+├── whats_new.md
+├── acp/
+│   ├── __init__.py
+│   ├── acp_agent_loop.py          [MODIFIED — exception narrowing]
+│   ├── entrypoint.py              [MODIFIED — exception narrowing]
+│   ├── utils.py
+│   └── tools/
+│       ├── __init__.py
+│       ├── base.py                [MODIFIED — exception narrowing]
+│       ├── session_update.py
+│       └── builtins/
+│           ├── bash.py            [MODIFIED — exception narrowing]
+│           ├── read_file.py       [MODIFIED — exception narrowing]
+│           ├── search_replace.py  [MODIFIED — exception narrowing]
+│           ├── todo.py
+│           └── write_file.py      [MODIFIED — exception narrowing]
+├── cli/
+│   ├── __init__.py
+│   ├── cli.py                     [MODIFIED — exception narrowing]
+│   ├── clipboard.py               [MODIFIED — exception narrowing]
+│   ├── commands.py
+│   ├── entrypoint.py              [MODIFIED — exception narrowing]
+│   ├── history_manager.py
+│   ├── terminal_setup.py          [MODIFIED — exception narrowing]
+│   ├── autocompletion/
+│   │   ├── __init__.py
+│   │   ├── base.py
+│   │   ├── path_completion.py     [MODIFIED — exception narrowing]
+│   │   └── slash_command.py
+│   ├── plan_offer/ (unchanged)
+│   ├── textual_ui/
+│   │   ├── __init__.py
+│   │   ├── app.py                 [MODIFIED — decomposed ≤25 methods, exception narrowing]
+│   │   ├── external_editor.py
+│   │   ├── terminal_theme.py
+│   │   ├── handlers/
+│   │   │   ├── __init__.py        [MODIFIED — re-exports new handler modules]
+│   │   │   ├── event_handler.py
+│   │   │   ├── command_handler.py     [NEW — slash command dispatch from VibeApp]
+│   │   │   ├── approval_handler.py    [NEW — tool approval flow from VibeApp]
+│   │   │   └── history_handler.py     [NEW — session history rebuild from VibeApp]
+│   │   └── widgets/
+│   │       ├── question_app.py    [MODIFIED — decomposed ≤20 methods]
+│   │       ├── welcome.py         [MODIFIED — decomposed ≤12 methods, exception narrowing]
+│   │       └── chat_input/
+│   │           ├── container.py   [MODIFIED — exception narrowing]
+│   │           └── text_area.py   [MODIFIED — decomposed ≤15 methods]
+│   └── update_notifier/
+│       └── adapters/
+│           └── pypi_update_gateway.py  [MODIFIED — exception narrowing]
+├── core/
+│   ├── __init__.py
+│   ├── protocols.py               [NEW — Protocol classes breaking circular imports]
+│   ├── agent_loop.py              [MODIFIED — decomposed ≤15 methods, exception narrowing]
+│   ├── tool_executor.py           [NEW — tool call handling from AgentLoop]
+│   ├── turn_runner.py             [NEW — LLM turn orchestration from AgentLoop]
+│   ├── config.py                  [MODIFIED — circular import resolution, exception narrowing]
+│   ├── middleware.py
+│   ├── output_formatters.py
+│   ├── programmatic.py
+│   ├── system_prompt.py           [MODIFIED — exception narrowing]
+│   ├── trusted_folders.py
+│   ├── types.py                   [MODIFIED — circular import resolution]
+│   ├── utils.py                   [MODIFIED — exception narrowing]
+│   ├── agents/
+│   │   └── manager.py             [MODIFIED — exception narrowing]
+│   ├── autocompletion/
+│   │   └── file_indexer/
+│   │       ├── ignore_rules.py    [MODIFIED — exception narrowing]
+│   │       ├── indexer.py         [MODIFIED — exception narrowing]
+│   │       └── watcher.py         [MODIFIED — exception narrowing]
+│   ├── llm/
+│   │   ├── exceptions.py          [MODIFIED — exception narrowing]
+│   │   └── types.py               [MODIFIED — align with protocols.py]
+│   ├── session/
+│   │   ├── session_loader.py      [MODIFIED — exception narrowing]
+│   │   ├── session_logger.py      [MODIFIED — exception narrowing]
+│   │   └── session_migration.py   [MODIFIED — exception narrowing]
+│   └── tools/
+│       ├── base.py                [MODIFIED — circular import resolution, dead code removal]
+│       ├── manager.py             [MODIFIED — circular import resolution, exception narrowing]
+│       ├── mcp.py                 [MODIFIED — exception narrowing]
+│       └── builtins/
+│           ├── bash.py            [MODIFIED — exception narrowing]
+│           ├── grep.py            [MODIFIED — exception narrowing]
+│           ├── search_replace.py  [MODIFIED — exception narrowing]
+│           ├── task.py            [MODIFIED — exception narrowing]
+│           └── write_file.py      [MODIFIED — exception narrowing]
+└── setup/ (unchanged)
 ```
 
 ### 0.4.2 Design Pattern Applications
 
-This rebranding exercise applies two core design patterns:
+**Composition over Inheritance (R2):**
 
-- **Find-and-replace with exclusion boundaries:** Every substitution follows the brand mapping table with strict exclusion rules for preserved identifiers (model names, API provider references, internal constants). The approach is deterministic — each old string maps to exactly one new string
-- **Minimal Change Clause compliance:** Every edit is validated as either a direct brand string replacement or a theme color change. No refactoring, feature additions, or opportunistic improvements are permitted
+All extracted handlers are injected into parent classes via `__init__` constructor. The parent class retains thin one-liner delegation methods that forward calls to the composed handler.
 
-### 0.4.3 Theme Specification
+```python
+# Pattern: VibeApp composes CommandHandler
 
-The purple-centric Textual CSS palette is anchored on primary accent `#5B39F3` with the following derived values:
+self._command_handler = CommandHandler(self)
+```
 
-| Token | Value | Purpose |
-|---|---|---|
-| Primary accent | `#5B39F3` | Primary interactive elements, focus ring |
-| Accent hover | `#7C5DF5` | Lighter variant for hover states |
-| Accent active | `#4A2DD4` | Darker variant for active/pressed states |
-| Muted/secondary | `#8B7FC7` | Desaturated purple for secondary text |
-| Border | Muted purple derived from `#5B39F3` at reduced opacity | Border accents |
-| Text on accent | `#FFFFFF` | White text on purple backgrounds |
-| Surface/background | Dark neutrals with subtle purple undertone | Panel and surface backgrounds |
-| Error/warning/success | Preserved existing semantic colors | Unless they clash with purple palette |
+**Protocol Module Pattern (R3):**
 
-The `WelcomeBanner` widget gradient colors will shift from the current orange palette (`#FFD800` → `#E10500`) to a purple-centric gradient derived from `#5B39F3` (e.g., `#7C5DF5` → `#5B39F3` → `#4A2DD4` → `#3A1FB5` → `#2A0F96`).
+`vibe/core/protocols.py` contains only `typing.Protocol` subclasses and `typing.TypeAlias` definitions with zero internal `vibe.*` runtime imports. This breaks the circular dependency chain by providing type-only contracts.
 
-### 0.4.4 User Interface Design
+```python
+class ToolLike(Protocol):
+    def get_name(self) -> str: ...
+```
 
-The rebranding affects the following user-facing surfaces:
+**Extraction Pattern (R1):**
 
-- **Welcome banner:** Displays "Blitzy Agent v{version}" with purple gradient animation instead of "Mistral Vibe v{version}" with orange gradient
-- **Onboarding welcome screen:** The `WELCOME_HIGHLIGHT` text changes from "Mistral Vibe" to "Blitzy Agent"
-- **Trust folder dialog:** Message changes from "Files that can modify your Mistral Vibe setup" to "Files that can modify your Blitzy Agent setup"
-- **CLI help text:** `blitzy --help` outputs description containing "Blitzy Agent" and `~/.blitzy/agents/` path
-- **ACP initialization:** The `agent_info` Implementation reports `name="@blitzy/blitzy-agent"`, `title="Blitzy Agent"`
-- **Commit signature:** Reads `Generated by Blitzy Agent.` and `Co-Authored-By: Blitzy Agent <agent@blitzy.com>`
-- **Update notifications:** Reference `blitzy-agent` package name and `uv tool upgrade blitzy-agent` command
-- **Session resume hint:** Prints `blitzy --continue` and `blitzy --resume {session_id}`
+Methods are moved verbatim into new modules. The original class retains a one-liner delegation stub:
+
+```python
+# In VibeApp (after extraction):
+
+def handle_command(self, cmd: str) -> None:
+    self._command_handler.handle_command(cmd)
+```
+
+**Explicit Public API (R6):**
+
+Every new `.py` file exports its public API via `__all__`:
+
+```python
+__all__ = ["ToolExecutor"]
+```
+
+### 0.4.3 New Module Specifications
+
+| Module | Purpose | Public API (`__all__`) | Composed Into |
+|---|---|---|---|
+| `vibe/core/protocols.py` | Protocol classes breaking circular imports | `BackendLike`, `ToolLike`, `ConfigLike`, `ToolManagerLike` | Referenced by `types.py`, `base.py`, `config.py`, `manager.py` |
+| `vibe/core/tool_executor.py` | Tool call handling extracted from AgentLoop | `ToolExecutor` with `handle_tool_calls()`, `execute_tool()`, `fill_missing_responses()` | `AgentLoop.__init__()` |
+| `vibe/core/turn_runner.py` | Single LLM turn orchestration from AgentLoop | `TurnRunner` with `perform_turn()`, `stream_events()` | `AgentLoop.__init__()` |
+| `vibe/cli/textual_ui/handlers/command_handler.py` | Slash command dispatch from VibeApp | `CommandHandler` with `handle_command()` | `VibeApp.__init__()` |
+| `vibe/cli/textual_ui/handlers/approval_handler.py` | Tool approval flow from VibeApp | `ApprovalHandler` with `on_approval_granted()`, `on_approval_rejected()` | `VibeApp.__init__()` |
+| `vibe/cli/textual_ui/handlers/history_handler.py` | Session history rebuild from VibeApp | `HistoryHandler` with `rebuild_history()` | `VibeApp.__init__()` |
+
+### 0.4.4 Architectural Diagrams — Before and After
+
+**Before — Circular Import Chain:**
+
+```mermaid
+graph TD
+    T["vibe/core/types.py<br/>LLMMessage, ToolCall, etc."]
+    B["vibe/core/tools/base.py<br/>BaseTool, BaseToolConfig"]
+    C["vibe/core/config.py<br/>VibeConfig"]
+    M["vibe/core/tools/manager.py<br/>ToolManager"]
+    MCP["vibe/core/tools/mcp.py"]
+    LT["vibe/core/llm/types.py<br/>BackendLike"]
+
+    B -->|"imports ToolStreamEvent"| T
+    C -->|"imports BaseToolConfig"| B
+    M -->|"imports BaseTool, BaseToolConfig"| B
+    MCP -->|"imports BaseTool"| B
+    LT -->|"imports LLMMessage, etc."| T
+    LT -.->|"TYPE_CHECKING: VibeConfig"| C
+    C -->|"imports from paths, prompts"| M
+    style T fill:#f88,stroke:#333
+    style B fill:#f88,stroke:#333
+    style C fill:#f88,stroke:#333
+    style M fill:#f88,stroke:#333
+```
+
+**After — Protocol-Based Decoupling:**
+
+```mermaid
+graph TD
+    P["vibe/core/protocols.py<br/>BackendLike, ToolLike,<br/>ConfigLike, ToolManagerLike<br/>(stdlib-only imports)"]
+    T["vibe/core/types.py"]
+    B["vibe/core/tools/base.py"]
+    C["vibe/core/config.py"]
+    M["vibe/core/tools/manager.py"]
+    LT["vibe/core/llm/types.py"]
+
+    T -.->|"TYPE_CHECKING"| P
+    B -.->|"TYPE_CHECKING"| P
+    C -.->|"TYPE_CHECKING"| P
+    M -.->|"TYPE_CHECKING"| P
+    LT -.->|"TYPE_CHECKING"| P
+    B -->|"runtime"| T
+    style P fill:#8f8,stroke:#333
+```
+
+**Before — AgentLoop Monolith:**
+
+```mermaid
+graph LR
+    AL["AgentLoop<br/>17 methods<br/>956 lines"]
+    AL --> TC["_handle_tool_calls()"]
+    AL --> ET["execute_tool()"]
+    AL --> FM["_fill_missing_responses()"]
+    AL --> PT["_perform_llm_turn()"]
+    AL --> SE["_stream_assistant_events()"]
+    AL --> CL["_conversation_loop()"]
+```
+
+**After — AgentLoop Decomposed:**
+
+```mermaid
+graph LR
+    AL["AgentLoop<br/>≤15 methods"]
+    TE["ToolExecutor<br/>handle_tool_calls()<br/>execute_tool()<br/>fill_missing_responses()"]
+    TR["TurnRunner<br/>perform_turn()<br/>stream_events()"]
+
+    AL -->|"composes"| TE
+    AL -->|"composes"| TR
+    AL -->|"delegates"| TE
+    AL -->|"delegates"| TR
+```
 
 
 ## 0.5 Transformation Mapping
 
 ### 0.5.1 File-by-File Transformation Plan
 
-Every target file is mapped to its source with specific key changes. All transformations are UPDATE mode (in-place modification of existing files). The entire refactor executes in ONE phase.
+The complete file transformation map covers every file in scope. The entire refactor executes in **one phase** — no split across multiple phases.
 
-**Package Metadata and Build Configuration:**
-
-| Target File | Transformation | Source File | Key Changes |
-|---|---|---|---|
-| `pyproject.toml` | UPDATE | `pyproject.toml` | `name = "mistral-vibe"` → `"blitzy-agent"`, `description` → `"Minimal CLI coding agent by Blitzy"`, `authors` → `[{ name = "Blitzy" }]`, `keywords` remove `"mistral"` add `"blitzy"`, `Homepage`/`Repository`/`Issues`/`Documentation` URLs → `blitzy/blitzy-agent`, `scripts` → `blitzy = "vibe.cli.entrypoint:main"` and `blitzy-acp = "vibe.acp.entrypoint:main"` |
-| `action.yml` | UPDATE | `action.yml` | `name: Mistral Vibe` → `Blitzy Agent`, `description` → `"Download, install, and run Blitzy Agent"`, `author: Mistral AI` → `Blitzy`, step names `Install Mistral Vibe` → `Install Blitzy Agent`, `Run Mistral Vibe` → `Run Blitzy Agent`, `id: run-mistral-vibe` → `run-blitzy-agent`, `vibe \` → `blitzy \` in run command |
-| `flake.nix` | UPDATE | `flake.nix` | `description = "Mistral Vibe!"` → `"Blitzy Agent!"`, `pythonSet.mistral-vibe` → `pythonSet.blitzy-agent` |
-| `vibe-acp.spec` | UPDATE | `vibe-acp.spec` | `name='vibe-acp'` → `'blitzy-acp'` |
-
-**Core Runtime — Brand Strings:**
+**Batch 1 — Circular Import Resolution + Protocol Creation:**
 
 | Target File | Transformation | Source File | Key Changes |
 |---|---|---|---|
-| `vibe/core/config.py` | UPDATE | `vibe/core/config.py` | Line 402: `env_prefix="VIBE_"` → `env_prefix="BLITZY_"`, Line 452: update comment `VIBE_*` → `BLITZY_*` |
-| `vibe/core/system_prompt.py` | UPDATE | `vibe/core/system_prompt.py` | Line 364: `"generated by Mistral Vibe"` → `"generated by Blitzy Agent"`, Line 368: `"Generated by Mistral Vibe.\n"` → `"Generated by Blitzy Agent.\n"`, Line 369: `"Co-Authored-By: Mistral Vibe <vibe@mistral.ai>\n"` → `"Co-Authored-By: Blitzy Agent <agent@blitzy.com>\n"` |
-| `vibe/core/utils.py` | UPDATE | `vibe/core/utils.py` | Line 151: `f"Mistral-Vibe/{__version__}"` → `f"Blitzy-Agent/{__version__}"` |
-| `vibe/core/paths/global_paths.py` | UPDATE | `vibe/core/paths/global_paths.py` | Line 19: `Path.home() / ".vibe"` → `Path.home() / ".blitzy"`, Line 23: `os.getenv("VIBE_HOME")` → `os.getenv("BLITZY_HOME")`, Line 38: `"vibe.log"` → `"blitzy.log"` |
-| `vibe/core/paths/config_paths.py` | UPDATE | `vibe/core/paths/config_paths.py` | Lines 26, 29: `cwd / ".vibe" / basename` → `cwd / ".blitzy" / basename`, Lines 37, 45, 53: `dir / ".vibe" / "tools"`, `"skills"`, `"agents"` → `dir / ".blitzy" / ...` |
+| `vibe/core/protocols.py` | CREATE | `vibe/core/llm/types.py` | New module: `BackendLike`, `ToolLike`, `ConfigLike`, `ToolManagerLike` Protocol classes; stdlib-only imports; `__all__` export; `from __future__ import annotations` |
+| `vibe/core/types.py` | UPDATE | `vibe/core/types.py` | Update TYPE_CHECKING imports to reference protocols.py where needed; maintain all existing exports |
+| `vibe/core/tools/base.py` | UPDATE | `vibe/core/tools/base.py` | Replace concrete cross-module type references with Protocol references under TYPE_CHECKING; remove dead code at line 128 (unreachable `yield` after `raise NotImplementedError`) |
+| `vibe/core/config.py` | UPDATE | `vibe/core/config.py` | Break circular import by using Protocol-based type annotations under TYPE_CHECKING for tool-related types |
+| `vibe/core/tools/manager.py` | UPDATE | `vibe/core/tools/manager.py` | Use Protocol-based references where needed to break cycle |
+| `vibe/core/tools/mcp.py` | UPDATE | `vibe/core/tools/mcp.py` | Update import chain to work with protocol-decoupled architecture |
+| `vibe/core/tools/ui.py` | UPDATE | `vibe/core/tools/ui.py` | Verify alignment with protocol-first architecture |
+| `vibe/core/llm/types.py` | UPDATE | `vibe/core/llm/types.py` | `BackendLike` remains here but is also re-exported from protocols.py; update TYPE_CHECKING references |
 
-**Core Runtime — Prompt Templates:**
-
-| Target File | Transformation | Source File | Key Changes |
-|---|---|---|---|
-| `vibe/core/prompts/cli.md` | UPDATE | `vibe/core/prompts/cli.md` | Line 1: `"Mistral Vibe, a CLI coding-agent built by Mistral AI"` → `"Blitzy Agent, a CLI coding-agent built by Blitzy"` |
-| `vibe/core/prompts/tests.md` | UPDATE | `vibe/core/prompts/tests.md` | Line 1: `"You are Vibe"` → `"You are Blitzy Agent"` |
-
-**CLI Entry Points and UI:**
+**Batch 2 — AgentLoop Decomposition:**
 
 | Target File | Transformation | Source File | Key Changes |
 |---|---|---|---|
-| `vibe/cli/entrypoint.py` | UPDATE | `vibe/cli/entrypoint.py` | Line 21: `"Run the Mistral Vibe interactive CLI"` → `"Run the Blitzy Agent interactive CLI"`, Line 77: `~/.vibe/agents/` → `~/.blitzy/agents/`, Line 109: `"vibe from"` → `"blitzy from"` |
-| `vibe/cli/cli.py` | UPDATE | `vibe/cli/cli.py` | Line 70: `"Hello Vibe!\n"` → `"Hello Blitzy!\n"` |
-| `vibe/cli/textual_ui/app.py` | UPDATE | `vibe/cli/textual_ui/app.py` | Line 1224: `"mistral-vibe"` → `"blitzy-agent"` in update message, Line 1252: `project_name="mistral-vibe"` → `project_name="blitzy-agent"`, Lines 1264-1265: `"vibe --continue"` → `"blitzy --continue"`, `"vibe --resume"` → `"blitzy --resume"` |
-| `vibe/cli/textual_ui/app.tcss` | UPDATE | `vibe/cli/textual_ui/app.tcss` | Replace the `WelcomeBanner` border color and add purple-centric theme variable overrides. The `app.tcss` file uses Textual `$variable` tokens — ensure the theme definition feeds the purple palette through Textual's theming system |
-| `vibe/cli/textual_ui/terminal_theme.py` | UPDATE | `vibe/cli/textual_ui/terminal_theme.py` | Update the `capture_terminal_theme()` function's fallback/default `Theme` construction: change `accent=colors.magenta or fg` to use `#5B39F3` as the accent color, and `primary=colors.blue or fg` to reflect the purple primary. Ensure the default theme aligns with the purple palette |
-| `vibe/cli/textual_ui/widgets/welcome.py` | UPDATE | `vibe/cli/textual_ui/widgets/welcome.py` | Line 47: `TARGET_COLORS` replace orange gradient `("#FFD800", "#FFAF00", "#FF8205", "#FA500F", "#E10500")` → purple gradient (e.g., `("#7C5DF5", "#6B4AF0", "#5B39F3", "#4A2DD4", "#3A1FB5")`), Line 48: `BORDER_TARGET_COLOR = "#b05800"` → a purple border color (e.g., `"#5B39F3"`), Line 97: `"Mistral Vibe v{version}"` → `"Blitzy Agent v{version}"` |
+| `vibe/core/tool_executor.py` | CREATE | `vibe/core/agent_loop.py` | Extract `ToolExecutor` class with `handle_tool_calls()`, `execute_tool()`, `fill_missing_responses()`; verbatim method move; `__all__` export; `from __future__ import annotations` |
+| `vibe/core/turn_runner.py` | CREATE | `vibe/core/agent_loop.py` | Extract `TurnRunner` class with `perform_turn()`, `stream_events()`; verbatim method move; `__all__` export; `from __future__ import annotations` |
+| `vibe/core/agent_loop.py` | UPDATE | `vibe/core/agent_loop.py` | Replace extracted methods with thin delegation one-liners; compose `ToolExecutor` and `TurnRunner` via `__init__`; preserve `act()` signature and return type; reduce to ≤15 methods |
 
-**Update Notifier:**
+**Batch 3 — VibeApp Decomposition:**
 
 | Target File | Transformation | Source File | Key Changes |
 |---|---|---|---|
-| `vibe/cli/update_notifier/update.py` | UPDATE | `vibe/cli/update_notifier/update.py` | Line 125: `["uv tool upgrade mistral-vibe", "brew upgrade mistral-vibe"]` → `["uv tool upgrade blitzy-agent", "brew upgrade blitzy-agent"]` |
-| `vibe/cli/update_notifier/adapters/github_update_gateway.py` | UPDATE | `vibe/cli/update_notifier/adapters/github_update_gateway.py` | Line 34: `"mistral-vibe-update-notifier"` → `"blitzy-agent-update-notifier"` |
+| `vibe/cli/textual_ui/handlers/command_handler.py` | CREATE | `vibe/cli/textual_ui/app.py` | Extract `CommandHandler` with `handle_command()`; verbatim method move; `__all__` export; `from __future__ import annotations` |
+| `vibe/cli/textual_ui/handlers/approval_handler.py` | CREATE | `vibe/cli/textual_ui/app.py` | Extract `ApprovalHandler` with `on_approval_granted()`, `on_approval_rejected()`; verbatim method move; `__all__` export; `from __future__ import annotations` |
+| `vibe/cli/textual_ui/handlers/history_handler.py` | CREATE | `vibe/cli/textual_ui/app.py` | Extract `HistoryHandler` with `rebuild_history()`; verbatim method move; `__all__` export; `from __future__ import annotations` |
+| `vibe/cli/textual_ui/handlers/__init__.py` | UPDATE | `vibe/cli/textual_ui/handlers/__init__.py` | Add re-exports for `CommandHandler`, `ApprovalHandler`, `HistoryHandler` |
+| `vibe/cli/textual_ui/app.py` | UPDATE | `vibe/cli/textual_ui/app.py` | Replace extracted methods with thin delegation one-liners; compose handlers via `__init__`; preserve `VibeApp.__init__()` constructor signature; reduce to ≤25 methods |
 
-**ACP Layer:**
-
-| Target File | Transformation | Source File | Key Changes |
-|---|---|---|---|
-| `vibe/acp/acp_agent_loop.py` | UPDATE | `vibe/acp/acp_agent_loop.py` | Line 135: `"Register your API Key inside Mistral Vibe"` → `"Register your API Key inside Blitzy Agent"`, Line 140: `"label": "Mistral Vibe Setup"` → `"label": "Blitzy Agent Setup"`, Line 158: `name="@mistralai/mistral-vibe"` → `name="@blitzy/blitzy-agent"`, Line 159: `title="Mistral Vibe"` → `title="Blitzy Agent"` |
-| `vibe/acp/entrypoint.py` | UPDATE | `vibe/acp/entrypoint.py` | Line 25: `"Run Mistral Vibe in ACP mode"` → `"Run Blitzy Agent in ACP mode"`, Line 45: `"Hello Vibe!\n"` → `"Hello Blitzy!\n"` |
-
-**Setup and Onboarding:**
+**Batch 4 — Remaining God Classes + Exception Narrowing + Cleanup:**
 
 | Target File | Transformation | Source File | Key Changes |
 |---|---|---|---|
-| `vibe/setup/onboarding/__init__.py` | UPDATE | `vibe/setup/onboarding/__init__.py` | Line 54: `'Run "vibe" to start using the Mistral Vibe CLI.'` → `'Run "blitzy" to start using the Blitzy Agent CLI.'` |
-| `vibe/setup/onboarding/screens/welcome.py` | UPDATE | `vibe/setup/onboarding/screens/welcome.py` | Line 15: `WELCOME_HIGHLIGHT = "Mistral Vibe"` → `WELCOME_HIGHLIGHT = "Blitzy Agent"` |
-| `vibe/setup/onboarding/screens/api_key.py` | UPDATE | `vibe/setup/onboarding/screens/api_key.py` | Line 24: `"https://github.com/mistralai/mistral-vibe?tab=readme-ov-file#configuration"` → `"https://github.com/blitzy/blitzy-agent?tab=readme-ov-file#configuration"` |
-| `vibe/setup/trusted_folders/trust_folder_dialog.py` | UPDATE | `vibe/setup/trusted_folders/trust_folder_dialog.py` | Line 61: `"Files that can modify your Mistral Vibe setup"` → `"Files that can modify your Blitzy Agent setup"` |
-
-**Release Notes:**
-
-| Target File | Transformation | Source File | Key Changes |
-|---|---|---|---|
-| `vibe/whats_new.md` | UPDATE | `vibe/whats_new.md` | Line 3: `".vibe folder"` → `".blitzy folder"` |
-
-**Documentation:**
-
-| Target File | Transformation | Source File | Key Changes |
-|---|---|---|---|
-| `README.md` | UPDATE | `README.md` | All `Mistral Vibe` → `Blitzy Agent`, `mistral-vibe` → `blitzy-agent`, `Mistral AI` (as author) → `Blitzy`, `mistralai/mistral-vibe` → `blitzy/blitzy-agent`, `~/.vibe/` → `~/.blitzy/`, `vibe` (CLI cmd) → `blitzy`, `vibe-acp` → `blitzy-acp`, preserve `Mistral's models` / `api.mistral.ai` references |
-| `CONTRIBUTING.md` | UPDATE | `CONTRIBUTING.md` | All `Mistral Vibe` → `Blitzy Agent`, `mistral-vibe` directory → `blitzy-agent` |
-| `CHANGELOG.md` | UPDATE | `CHANGELOG.md` | `mistral-vibe` → `blitzy-agent` in applicable entries |
-| `docs/README.md` | UPDATE | `docs/README.md` | `Mistral Vibe` → `Blitzy Agent`, URL references |
-| `docs/acp-setup.md` | UPDATE | `docs/acp-setup.md` | `Mistral Vibe` → `Blitzy Agent`, `vibe-acp` → `blitzy-acp`, config snippet names `"Mistral Vibe"` → `"Blitzy Agent"`, `mistral-vibe` Zed extension → `blitzy-agent` |
-
-**CI/CD and Distribution:**
-
-| Target File | Transformation | Source File | Key Changes |
-|---|---|---|---|
-| `.github/CODEOWNERS` | UPDATE | `.github/CODEOWNERS` | `@mistralai/mistral-vibe` → `@blitzy/blitzy-agent` |
-| `.github/ISSUE_TEMPLATE/bug-report.yml` | UPDATE | `.github/ISSUE_TEMPLATE/bug-report.yml` | `Mistral Vibe` → `Blitzy Agent`, `mistral-vibe` → `blitzy-agent` |
-| `.github/ISSUE_TEMPLATE/config.yml` | UPDATE | `.github/ISSUE_TEMPLATE/config.yml` | `Mistral AI` → `Blitzy`, `docs.mistral.ai/mistral-vibe` → `docs.blitzy.com/blitzy-agent`, `Mistral Vibe` → `Blitzy Agent` |
-| `.github/ISSUE_TEMPLATE/feature-request.yml` | UPDATE | `.github/ISSUE_TEMPLATE/feature-request.yml` | `Mistral Vibe` → `Blitzy Agent` |
-| `.github/workflows/build-and-upload.yml` | UPDATE | `.github/workflows/build-and-upload.yml` | `"mistralai/mistral-vibe"` → `"blitzy/blitzy-agent"` |
-| `.github/workflows/release.yml` | UPDATE | `.github/workflows/release.yml` | `mistral-vibe` → `blitzy-agent` throughout |
-| `distribution/zed/extension.toml` | UPDATE | `distribution/zed/extension.toml` | `id = "mistral-vibe"` → `"blitzy-agent"`, `name = "Mistral Vibe"` → `"Blitzy Agent"`, `authors = ["Mistral AI"]` → `["Blitzy"]`, repository URL, all `agent_servers.mistral-vibe` section keys → `agent_servers.blitzy-agent`, archive URLs → `blitzy/blitzy-agent`, `icon = "./icons/mistral_vibe.svg"` → update to appropriate icon reference |
-| `scripts/install.sh` | UPDATE | `scripts/install.sh` | `Mistral Vibe` → `Blitzy Agent`, `mistral-vibe` → `blitzy-agent`, `vibe, vibe-acp` → `blitzy, blitzy-acp` |
-| `scripts/prepare_release.py` | UPDATE | `scripts/prepare_release.py` | `"git@github.com:mistralai/mistral-vibe.git"` → `"git@github.com:blitzy/blitzy-agent.git"` |
-
-**Test Assertion Strings:**
-
-| Target File | Transformation | Source File | Key Changes |
-|---|---|---|---|
-| `tests/acp/test_initialize.py` | UPDATE | `tests/acp/test_initialize.py` | Line 28, 51: `name="@mistralai/mistral-vibe", title="Mistral Vibe"` → `name="@blitzy/blitzy-agent", title="Blitzy Agent"`, Line 59: `"Register your API Key inside Mistral Vibe"` → `"... Blitzy Agent"`, Line 65: `"Mistral Vibe Setup"` → `"Blitzy Agent Setup"` |
-| `tests/onboarding/test_run_onboarding.py` | UPDATE | `tests/onboarding/test_run_onboarding.py` | Line 60: `"Mistral Vibe CLI"` → `"Blitzy Agent CLI"`, `"vibe"` → `"blitzy"` |
-| `tests/update_notifier/test_pypi_update_gateway.py` | UPDATE | `tests/update_notifier/test_pypi_update_gateway.py` | Lines 29, 60, 81, 105, 149: `project_name="mistral-vibe"` → `"blitzy-agent"`, Line 39: `"/simple/mistral-vibe/"` → `"/simple/blitzy-agent/"`, Lines 46, 49, 51, 74, 96: `"mistral_vibe-"` → `"blitzy_agent-"` in wheel filenames |
-| `tests/update_notifier/test_ui_update_notification.py` | UPDATE | `tests/update_notifier/test_ui_update_notification.py` | Lines 116, 210, 405: `"mistral-vibe"` → `"blitzy-agent"` in expected notification messages |
+| `vibe/cli/textual_ui/widgets/question_app.py` | UPDATE | `vibe/cli/textual_ui/widgets/question_app.py` | Decompose QuestionApp from 45 to ≤20 methods via helper class extraction |
+| `vibe/cli/textual_ui/widgets/chat_input/text_area.py` | UPDATE | `vibe/cli/textual_ui/widgets/chat_input/text_area.py` | Decompose ChatTextArea from 29 to ≤15 methods via helper class extraction |
+| `vibe/cli/textual_ui/widgets/welcome.py` | UPDATE | `vibe/cli/textual_ui/widgets/welcome.py` | Decompose WelcomeBanner from 20 to ≤12 methods via helper class extraction |
+| `vibe/acp/acp_agent_loop.py` | UPDATE | `vibe/acp/acp_agent_loop.py` | Replace 2 `except Exception` with `httpx.HTTPError`, `asyncio.CancelledError`, `json.JSONDecodeError`, `ConnectionError` |
+| `vibe/acp/entrypoint.py` | UPDATE | `vibe/acp/entrypoint.py` | Replace 2 `except Exception` with `OSError`, `tomllib.TOMLDecodeError`, `ImportError` |
+| `vibe/acp/tools/base.py` | UPDATE | `vibe/acp/tools/base.py` | Replace 1 `except Exception` with specific types |
+| `vibe/acp/tools/builtins/bash.py` | UPDATE | `vibe/acp/tools/builtins/bash.py` | Replace 3 `except Exception` with `OSError`, `FileNotFoundError`, `asyncio.CancelledError`, `pydantic.ValidationError` |
+| `vibe/acp/tools/builtins/read_file.py` | UPDATE | `vibe/acp/tools/builtins/read_file.py` | Replace 1 `except Exception` with specific types per ACP builtin mapping |
+| `vibe/acp/tools/builtins/search_replace.py` | UPDATE | `vibe/acp/tools/builtins/search_replace.py` | Replace 2 `except Exception` with specific types per ACP builtin mapping |
+| `vibe/acp/tools/builtins/write_file.py` | UPDATE | `vibe/acp/tools/builtins/write_file.py` | Replace 1 `except Exception` with specific types per ACP builtin mapping |
+| `vibe/cli/cli.py` | UPDATE | `vibe/cli/cli.py` | Replace 3 `except Exception` with specific types |
+| `vibe/cli/clipboard.py` | UPDATE | `vibe/cli/clipboard.py` | Replace 1 `except Exception` with `OSError`, `subprocess.SubprocessError` |
+| `vibe/cli/entrypoint.py` | UPDATE | `vibe/cli/entrypoint.py` | Replace 1 `except Exception` with specific types |
+| `vibe/cli/terminal_setup.py` | UPDATE | `vibe/cli/terminal_setup.py` | Replace 4 `except Exception` with `OSError`, `subprocess.SubprocessError` |
+| `vibe/cli/autocompletion/path_completion.py` | UPDATE | `vibe/cli/autocompletion/path_completion.py` | Replace 1 `except Exception` with `OSError` |
+| `vibe/cli/update_notifier/adapters/pypi_update_gateway.py` | UPDATE | `vibe/cli/update_notifier/adapters/pypi_update_gateway.py` | Replace 2 `except Exception` with `httpx.HTTPError`, `json.JSONDecodeError`, `OSError` |
+| `vibe/cli/textual_ui/app.py` | UPDATE | `vibe/cli/textual_ui/app.py` | Replace 19 `except Exception` with `OSError`, `subprocess.SubprocessError`, `asyncio.CancelledError` |
+| `vibe/cli/textual_ui/widgets/chat_input/container.py` | UPDATE | `vibe/cli/textual_ui/widgets/chat_input/container.py` | Replace 1 `except Exception` with specific types |
+| `vibe/cli/textual_ui/widgets/welcome.py` | UPDATE | `vibe/cli/textual_ui/widgets/welcome.py` | Replace 1 `except Exception` with specific types |
+| `vibe/core/agent_loop.py` | UPDATE | `vibe/core/agent_loop.py` | Replace 4 `except Exception` with `httpx.HTTPError`, `asyncio.CancelledError`, `json.JSONDecodeError` |
+| `vibe/core/config.py` | UPDATE | `vibe/core/config.py` | Replace 1 `except Exception` with specific types |
+| `vibe/core/utils.py` | UPDATE | `vibe/core/utils.py` | Replace 2 `except Exception` with specific types |
+| `vibe/core/system_prompt.py` | UPDATE | `vibe/core/system_prompt.py` | Replace 3 `except Exception` with `OSError`, `subprocess.SubprocessError` |
+| `vibe/core/agents/manager.py` | UPDATE | `vibe/core/agents/manager.py` | Replace 1 `except Exception` with `OSError`, `ImportError` |
+| `vibe/core/skills/manager.py` | UPDATE | `vibe/core/skills/manager.py` | Replace 1 `except Exception` with `OSError`, `ImportError` |
+| `vibe/core/session/session_loader.py` | UPDATE | `vibe/core/session/session_loader.py` | Replace 1 `except Exception` with `OSError`, `json.JSONDecodeError` |
+| `vibe/core/session/session_logger.py` | UPDATE | `vibe/core/session/session_logger.py` | Replace 5 `except Exception` with `OSError`, `json.JSONDecodeError`, `PermissionError` |
+| `vibe/core/session/session_migration.py` | UPDATE | `vibe/core/session/session_migration.py` | Replace 1 `except Exception` with `OSError`, `json.JSONDecodeError` |
+| `vibe/core/llm/exceptions.py` | UPDATE | `vibe/core/llm/exceptions.py` | Replace 1 `except Exception` with `httpx.HTTPError` |
+| `vibe/core/autocompletion/file_indexer/ignore_rules.py` | UPDATE | `vibe/core/autocompletion/file_indexer/ignore_rules.py` | Replace 1 `except Exception` with `OSError` |
+| `vibe/core/autocompletion/file_indexer/indexer.py` | UPDATE | `vibe/core/autocompletion/file_indexer/indexer.py` | Replace 2 `except Exception` with `OSError` |
+| `vibe/core/autocompletion/file_indexer/watcher.py` | UPDATE | `vibe/core/autocompletion/file_indexer/watcher.py` | Replace 1 `except Exception` with `OSError` |
+| `vibe/core/tools/builtins/bash.py` | UPDATE | `vibe/core/tools/builtins/bash.py` | Replace 1 `except Exception` with `OSError`, `subprocess.SubprocessError` |
+| `vibe/core/tools/builtins/grep.py` | UPDATE | `vibe/core/tools/builtins/grep.py` | Replace 1 `except Exception` with `OSError`, `subprocess.SubprocessError` |
+| `vibe/core/tools/builtins/search_replace.py` | UPDATE | `vibe/core/tools/builtins/search_replace.py` | Replace 3 `except Exception` with `OSError`, `pydantic.ValidationError` |
+| `vibe/core/tools/builtins/task.py` | UPDATE | `vibe/core/tools/builtins/task.py` | Replace 1 `except Exception` with `OSError`, `asyncio.CancelledError` |
+| `vibe/core/tools/builtins/write_file.py` | UPDATE | `vibe/core/tools/builtins/write_file.py` | Replace 1 `except Exception` with `OSError`, `PermissionError` |
+| `vibe/core/tools/manager.py` | UPDATE | `vibe/core/tools/manager.py` | Replace 6 `except Exception` with `OSError`, `ImportError`, `pydantic.ValidationError` |
+| `vibe/core/tools/mcp.py` | UPDATE | `vibe/core/tools/mcp.py` | Replace 4 `except Exception` with `httpx.HTTPError`, `OSError`, `asyncio.CancelledError` |
 
 ### 0.5.2 Cross-File Dependencies
 
-**Import statement updates:** None required — all Python import paths remain unchanged since the `vibe/` package directory is preserved and no module or class names are altered.
+**Import Statement Updates for New Modules:**
 
-**Configuration updates for new structure:**
-- The `env_prefix` change in `vibe/core/config.py` from `VIBE_` to `BLITZY_` means any user currently setting `VIBE_ACTIVE_MODEL=devstral-2` will need to use `BLITZY_ACTIVE_MODEL=devstral-2`
-- The home directory change from `~/.vibe/` to `~/.blitzy/` means existing user configurations will need manual migration (existing `~/.vibe/config.toml` will not be auto-discovered)
-- The `VIBE_HOME` override environment variable changes to `BLITZY_HOME`
+| Old Import | New Import | Affected Files |
+|---|---|---|
+| Methods inline in `AgentLoop` | `from vibe.core.tool_executor import ToolExecutor` | `vibe/core/agent_loop.py` |
+| Methods inline in `AgentLoop` | `from vibe.core.turn_runner import TurnRunner` | `vibe/core/agent_loop.py` |
+| Methods inline in `VibeApp` | `from vibe.cli.textual_ui.handlers.command_handler import CommandHandler` | `vibe/cli/textual_ui/app.py` |
+| Methods inline in `VibeApp` | `from vibe.cli.textual_ui.handlers.approval_handler import ApprovalHandler` | `vibe/cli/textual_ui/app.py` |
+| Methods inline in `VibeApp` | `from vibe.cli.textual_ui.handlers.history_handler import HistoryHandler` | `vibe/cli/textual_ui/app.py` |
+| N/A (new Protocol module) | `from vibe.core.protocols import BackendLike, ToolLike, ConfigLike, ToolManagerLike` | `vibe/core/types.py`, `vibe/core/tools/base.py`, `vibe/core/config.py`, `vibe/core/tools/manager.py` (under TYPE_CHECKING) |
 
-**Test file impact:** Only assertion strings are updated to match the new brand values. No test imports, fixtures, mocking logic, or test structure changes are needed.
+**Test File Import Corrections:**
 
-### 0.5.3 Wildcard Pattern Summary
+Tests that import `AgentLoop` (21 files), `VibeApp` (9 files), and other refactored modules will continue to import from their original locations. The public import paths (`from vibe.core.agent_loop import AgentLoop`, `from vibe.cli.textual_ui.app import VibeApp`) remain stable. Test updates are needed **only** if tests directly reference internal methods that have been moved to new modules.
+
+**Configuration Updates:**
+
+No configuration files require changes. The `pyproject.toml` entry points remain:
+- `blitzy = "vibe.cli.entrypoint:main"`
+- `blitzy-acp = "vibe.acp.entrypoint:main"`
+
+### 0.5.3 Wildcard Patterns
 
 All wildcard patterns use trailing patterns only:
 
-- `vibe/**/*.py` — scan all Python source files for user-facing brand strings
-- `vibe/core/prompts/*.md` — update prompt template branding
-- `tests/**/*.py` — update hardcoded brand strings in test assertions ONLY
-- `.github/ISSUE_TEMPLATE/*.yml` — update issue template brand references
-- `.github/workflows/*.yml` — update CI/CD workflow brand references
-- `docs/**/*.md` — update documentation brand references
-- `scripts/*` — update script brand references
-
-### 0.5.4 One-Phase Execution
-
-The entire refactor executes in ONE phase. All files listed above are modified simultaneously in a single pass. No multi-phase or staged rollout is required — this is a pure find-and-replace operation with theme color substitution, and all changes are independent at the code level (no file depends on the brand value of another file at import time).
+- `vibe/acp/tools/builtins/*.py` — ACP builtin tool exception narrowing (R9: sibling-pattern application)
+- `vibe/core/session/*.py` — Session module exception narrowing
+- `vibe/core/tools/builtins/*.py` — Core builtin tool exception narrowing
+- `vibe/core/autocompletion/file_indexer/*.py` — File indexer exception narrowing
+- `vibe/cli/textual_ui/handlers/*.py` — New and updated handler modules
+- `tests/**/*.py` — Test files potentially needing import path updates
 
 
 ## 0.6 Dependency Inventory
 
-### 0.6.1 Key Packages
+### 0.6.1 Key Private and Public Packages
 
-All packages are existing dependencies — no new packages are added or removed. The versions below are taken directly from `pyproject.toml` and the installed environment.
+Per Rule R10, **no new dependencies may be added** to `pyproject.toml`. All packages listed below are already installed and verified. The exception narrowing work references exception types from these existing dependencies.
 
-| Registry | Package | Version | Purpose |
-|---|---|---|---|
-| PyPI | `agent-client-protocol` | `==0.7.1` | ACP agent protocol for editor integration |
-| PyPI | `anyio` | `>=4.12.0` | Async I/O abstraction layer |
-| PyPI | `httpx` | `>=0.28.1` | HTTP client for API calls and update checks |
-| PyPI | `mcp` | `>=1.14.0` | MCP server integration |
-| PyPI | `mistralai` | `==1.9.11` | Mistral AI Python SDK (PRESERVED — external dependency) |
-| PyPI | `pexpect` | `>=4.9.0` | Terminal interaction |
-| PyPI | `packaging` | `>=24.1` | Version parsing for update notifier |
-| PyPI | `pydantic` | `>=2.12.4` | Data validation and settings management |
-| PyPI | `pydantic-settings` | `>=2.12.0` | Settings configuration with env var support |
-| PyPI | `pyyaml` | `>=6.0.0` | YAML parsing |
-| PyPI | `python-dotenv` | `>=1.0.0` | `.env` file loading |
-| PyPI | `rich` | `>=14.0.0` | Terminal formatting |
-| PyPI | `textual` | `>=1.0.0` | TUI framework for CLI interface |
-| PyPI | `tomli-w` | `>=1.2.0` | TOML writing for config persistence |
-| PyPI | `watchfiles` | `>=1.1.1` | File watching for auto-completion indexer |
-| PyPI | `pyperclip` | `>=1.11.0` | Clipboard integration |
-| PyPI | `textual-speedups` | `>=0.2.1` | Textual performance optimizations |
-| PyPI | `tree-sitter` | `>=0.25.2` | Code parsing |
-| PyPI | `tree-sitter-bash` | `>=0.25.1` | Bash grammar for tree-sitter |
-| PyPI | `hatchling` | build-time | Build backend |
-| PyPI | `hatch-vcs` | build-time | Version control integration for hatchling |
-| PyPI | `editables` | build-time | Editable install support |
+**Runtime Dependencies (from `pyproject.toml` `[project.dependencies]`):**
 
-**Dev dependencies (from dependency-groups):**
+| Package | Registry | Constraint | Installed Version | Relevance to Refactor |
+|---|---|---|---|---|
+| `pydantic` | PyPI | `>=2.12.4` | 2.12.5 | `pydantic.ValidationError` used in exception narrowing |
+| `pydantic-settings` | PyPI | `>=2.12.0` | 2.12.0 | Config model validation |
+| `httpx` | PyPI | `>=0.28.1` | 0.28.1 | `httpx.HTTPError` used in exception narrowing |
+| `textual` | PyPI | `>=1.0.0` | 6.9.0 | UI framework for god class decomposition targets |
+| `rich` | PyPI | `>=14.0.0` | 14.2.0 | Terminal rendering |
+| `anyio` | PyPI | `>=4.12.0` | 4.12.0 | Async I/O abstraction |
+| `mistralai` | PyPI | `==1.9.11` | 1.9.11 | Pinned exactly; no changes |
+| `agent-client-protocol` | PyPI | `==0.7.1` | 0.7.1 | ACP layer; pinned exactly |
+| `mcp` | PyPI | `>=1.14.0` | 1.23.0 | MCP tool integration |
+| `pexpect` | PyPI | `>=4.9.0` | 4.9.0 | Bash tool process control |
+| `pyyaml` | PyPI | `>=6.0.0` | 6.0.3 | Skills YAML parsing |
+| `python-dotenv` | PyPI | `>=1.0.0` | 1.2.1 | Environment loading |
+| `tomli-w` | PyPI | `>=1.2.0` | 1.2.0 | TOML writing; `tomllib.TOMLDecodeError` for exception narrowing |
+| `packaging` | PyPI | `>=24.1` | 25.0 | Version parsing |
+| `watchfiles` | PyPI | `>=1.1.1` | 1.1.1 | File system monitoring |
+| `pyperclip` | PyPI | `>=1.11.0` | 1.11.0 | Clipboard operations |
+| `textual-speedups` | PyPI | `>=0.2.1` | 0.2.1 | Rendering performance |
+| `tree-sitter` | PyPI | `>=0.25.2` | 0.25.2 | Shell parsing |
+| `tree-sitter-bash` | PyPI | `>=0.25.1` | 0.25.1 | Bash grammar |
 
-| Registry | Package | Version | Purpose |
-|---|---|---|---|
-| PyPI | `ruff` | `>=0.14.5` | Linter and formatter |
-| PyPI | `pyright` | `>=1.1.403` | Type checking |
-| PyPI | `pytest` | `>=8.3.5` | Test framework |
-| PyPI | `pytest-asyncio` | `>=1.2.0` | Async test support |
-| PyPI | `pytest-timeout` | `>=2.4.0` | Test timeout management |
-| PyPI | `pytest-textual-snapshot` | `>=1.1.0` | Textual UI snapshot testing |
-| PyPI | `pytest-xdist` | `>=3.8.0` | Parallel test execution |
-| PyPI | `respx` | `>=0.22.0` | HTTP mocking for httpx |
-| PyPI | `debugpy` | `>=1.8.19` | Debug adapter |
+**Dev Dependencies (from `pyproject.toml` `[dependency-groups] dev`):**
 
-### 0.6.2 Dependency Updates
+| Package | Registry | Constraint | Installed Version | Relevance to Refactor |
+|---|---|---|---|---|
+| `pytest` | PyPI | `>=8.3.5` | 8.4.2 | Test execution for validation gates |
+| `pytest-asyncio` | PyPI | `>=1.2.0` | 1.3.0 | Async test support |
+| `pytest-timeout` | PyPI | `>=2.4.0` | 2.4.0 | Test timeout enforcement |
+| `pytest-xdist` | PyPI | `>=3.8.0` | 3.8.0 | Parallel test execution |
+| `ruff` | PyPI | `>=0.14.5` | 0.14.7 | Linting and C901 complexity checks |
+| `pyright` | PyPI | `>=1.1.403` | 1.1.407 | Static type checking |
+| `vulture` | PyPI | `>=2.14` | 2.14 | Dead code detection |
+| `respx` | PyPI | `>=0.22.0` | 0.22.0 | HTTP mocking for tests |
 
-**No dependency additions or removals** are required for this rebranding exercise. All existing dependencies remain at their current versions.
+**Standard Library Modules Used in Exception Narrowing (no installation needed):**
 
-**Import Refactoring:** No import changes are needed since the `vibe/` package directory is preserved and no module names change.
-
-**External Reference Updates:**
-
-The following configuration and build files require brand string updates (not dependency changes):
-
-- `pyproject.toml` — project name, description, keywords, authors, URLs, script entry points (module paths remain unchanged: `vibe.cli.entrypoint:main`, `vibe.acp.entrypoint:main`)
-- `flake.nix` — description string, package reference
-- `action.yml` — GitHub Action metadata only (no dependency changes)
-- `.github/workflows/release.yml` — PyPI project reference and Zed extension name
-- `distribution/zed/extension.toml` — extension metadata and download URLs
-
-### 0.6.3 Environment Variable Migration
-
-The `env_prefix` change from `VIBE_` to `BLITZY_` affects the following environment variables that users may have configured:
-
-| Old Variable | New Variable | Purpose |
+| Module | Exception Type | Usage Context |
 |---|---|---|
-| `VIBE_ACTIVE_MODEL` | `BLITZY_ACTIVE_MODEL` | Override active model |
-| `VIBE_HOME` | `BLITZY_HOME` | Override home directory location |
-| `VIBE_*` (any) | `BLITZY_*` | Any Pydantic settings override |
+| `asyncio` | `asyncio.CancelledError` | ACP agent loop, core agent loop, tool execution |
+| `json` | `json.JSONDecodeError` | ACP agent loop, session files, update notifier |
+| `subprocess` | `subprocess.SubprocessError` | CLI terminal setup, clipboard, system prompt |
+| `tomllib` | `tomllib.TOMLDecodeError` | ACP entrypoint config parsing |
+| `builtins` | `OSError`, `FileNotFoundError`, `PermissionError`, `ImportError` | File operations across all modules |
 
-**Preserved environment variables (NOT renamed):**
-- `MISTRAL_API_KEY` — external API credential, explicitly preserved
-- `DEBUG_MODE` — debugpy activation, not branded
+### 0.6.2 Import Refactoring
+
+**Files Requiring Import Updates (by wildcard pattern):**
+
+- `vibe/core/agent_loop.py` — Add imports for `ToolExecutor`, `TurnRunner`
+- `vibe/cli/textual_ui/app.py` — Add imports for `CommandHandler`, `ApprovalHandler`, `HistoryHandler`
+- `vibe/core/types.py` — Add TYPE_CHECKING import for protocols
+- `vibe/core/tools/base.py` — Add TYPE_CHECKING import for protocols
+- `vibe/core/config.py` — Add TYPE_CHECKING import for protocols
+- `vibe/core/tools/manager.py` — Add TYPE_CHECKING import for protocols
+- `vibe/cli/textual_ui/handlers/__init__.py` — Add re-exports for new handler classes
+
+**Exception-Related Import Additions (per module pattern):**
+
+| Module Pattern | New Imports Required |
+|---|---|
+| `vibe/acp/tools/builtins/*.py` | `import asyncio`, `from pydantic import ValidationError` (where not already imported) |
+| `vibe/acp/acp_agent_loop.py` | `import json`, `import asyncio` (where not already imported) |
+| `vibe/acp/entrypoint.py` | `import tomllib` |
+| `vibe/core/agent_loop.py` | `import json`, `import asyncio` (where not already imported) |
+| `vibe/core/session/*.py` | `import json` (where not already imported) |
+| `vibe/cli/textual_ui/app.py` | `import subprocess`, `import asyncio` (where not already imported) |
+| `vibe/cli/update_notifier/*.py` | `import json` (where not already imported) |
+
+### 0.6.3 External Reference Updates
+
+**Build Files:**
+- `pyproject.toml` — **No changes** (R10: no dependency modifications)
+
+**CI/CD Files:**
+- `.github/workflows/*.yml` — No changes required; workflows run `uv run pytest` and `uv run ruff check` which will validate the refactored code
+
+**Documentation:**
+- `README.md` — Review for structural path references
+- `CONTRIBUTING.md` — Review for module reference accuracy
+- `AGENTS.md` — Already aligned with Python 3.12 conventions; no updates needed
 
 
-## 0.7 Refactoring Rules
+## 0.7 Special Analysis
 
-### 0.7.1 User-Specified Rules and Requirements
+### 0.7.1 Circular Import Cycle — Detailed Resolution Strategy
 
-The following rules are explicitly mandated by the user and must be enforced on every edit:
+The circular import chain in `vibe/core/` is the foundational prerequisite (Batch 1) because all subsequent decomposition work depends on clean import resolution.
 
-- **Minimal Change Clause:** Every edit MUST be a direct brand string replacement or theme color change. No refactoring, no feature additions, no "while we're here" improvements
-- **Internal Python identifiers are immutable:** `VibeConfig`, `VibeApp`, `AgentLoop`, `VibeAcpAgentLoop`, and all other class/function/variable names MUST NOT be modified
-- **The `vibe/` package directory name is preserved:** The directory remains `vibe/`, not renamed to `blitzy/`
-- **Internal constants are preserved:** `VIBE_ROOT` (in `vibe/__init__.py`), `VIBE_STOP_EVENT_TAG`, `VIBE_WARNING_TAG` (in `vibe/core/utils.py`) MUST NOT be modified
-- **External Mistral API references are preserved:**
-  - Provider name `"mistral"` in config (refers to the Mistral API service, not the app)
-  - `MISTRAL_API_KEY` environment variable
-  - `api.mistral.ai` and `codestral.mistral.ai` endpoints
-  - The `mistralai` Python SDK package dependency
-  - `Mistral AI Studio` label in the onboarding API key screen (external service reference)
-- **LLM model names are preserved:** `mistral-vibe-cli-latest`, `devstral-2`, `devstral-small`, `devstral-small-latest` are model identifiers, not app branding
-- **All existing functionality must be preserved:** No behavioral changes to any tool, agent, middleware, backend, or protocol
-- **Config file format and session log format are unchanged**
-- **Test logic and test structure are unchanged:** Only assertion strings containing old branding are updated
+**Current Import Topology:**
 
-### 0.7.2 Special Instructions and Constraints
+The cycle operates across four primary modules with TYPE_CHECKING guards already partially mitigating runtime failures:
 
-**Disambiguation Protocol for "Mistral" References:**
+| Module | Runtime Imports from `vibe.*` | TYPE_CHECKING Imports |
+|---|---|---|
+| `vibe/core/types.py` | None | `from vibe.core.tools.base import BaseTool` (with `else: BaseTool = Any` fallback) |
+| `vibe/core/tools/base.py` | `from vibe.core.types import ToolStreamEvent` | `from vibe.core.agents.manager import AgentManager`; `from vibe.core.types import ApprovalCallback, UserInputCallback` |
+| `vibe/core/config.py` | `from vibe.core.tools.base import BaseToolConfig` (line 30, top-level runtime import) | None for tools |
+| `vibe/core/tools/manager.py` | `from vibe.core.tools.base import BaseTool, BaseToolConfig` | `from vibe.core.config import MCPHttp, MCPStdio, MCPStreamableHttp, VibeConfig` |
+| `vibe/core/llm/types.py` | `from vibe.core.types import AvailableTool, LLMChunk, LLMMessage, StrToolChoice` | `from vibe.core.config import ModelConfig` |
 
-When encountering the word "Mistral" in the codebase, apply the following decision tree:
+**Critical Cycle Path:** `config.py` → (runtime imports) `tools/base.py:BaseToolConfig` → `types.py:ToolStreamEvent` → (TYPE_CHECKING) `tools/base.py:BaseTool`. The cycle is partially broken by the `TYPE_CHECKING` + `else: BaseTool = Any` pattern in `types.py`, but this workaround introduces a runtime type erasure that undermines type safety.
 
-- If the context refers to the **application brand** (e.g., "Mistral Vibe", "built by Mistral AI" in app description) → **REPLACE** with Blitzy equivalent
-- If the context refers to the **external Mistral API service** (e.g., `api.mistral.ai`, `MISTRAL_API_KEY`, `mistralai` SDK, provider `name="mistral"`, `Mistral AI Studio` console) → **PRESERVE** unchanged
-- If the context refers to a **model name** (e.g., `mistral-vibe-cli-latest`) → **PRESERVE** unchanged
-- If the context is in a **GitHub repository path** (e.g., `mistralai/mistral-vibe`) → **REPLACE** with `blitzy/blitzy-agent`
+**Resolution via `vibe/core/protocols.py`:**
 
-**Theme Color Constraints:**
+The new protocol module will contain:
 
-- Primary accent `#5B39F3` is the anchor color — all derived colors must be cohesive with this purple
-- Semantic colors (error/warning/success) should be preserved from the existing theme unless they visually clash with the purple palette
-- The Textual CSS file (`app.tcss`) uses `$variable` tokens from the Textual theming system — the purple palette is injected through the `Theme` object, not hardcoded in CSS
-- The `WelcomeBanner` widget uses direct hex color strings for its gradient animation — these must be replaced with purple gradient values
+- `ToolLike(Protocol)` — abstracts `BaseTool.get_name()`, `BaseTool.invoke()`, `BaseTool.get_permission()` contracts
+- `ConfigLike(Protocol)` — abstracts `VibeConfig` field access needed by cross-module consumers
+- `ToolManagerLike(Protocol)` — abstracts `ToolManager.get()`, `ToolManager.available_tools` contracts
+- `BackendLike` — re-exported from `vibe/core/llm/types.py` for centralized protocol access (the existing Protocol definition in `llm/types.py` is retained as the source of truth)
 
-**Validation Framework (Automated Checks):**
+**Protocol Module Purity (R3):** `vibe/core/protocols.py` must import only from `typing`, `collections.abc`, and other stdlib modules. The verification command `grep "^from vibe\." vibe/core/protocols.py | grep -v "__future__"` must return empty.
 
-The following commands must pass after all changes are applied:
+**Migration Strategy for `config.py`:** The top-level runtime import `from vibe.core.tools.base import BaseToolConfig` at line 30 is the hardest cycle link to break. The approach is:
+- Move `BaseToolConfig` to be importable via `TYPE_CHECKING` guard
+- At runtime, use a lightweight `dict`-based validation or a local copy of the minimal `BaseToolConfig` Pydantic model if the field type is needed for Pydantic schema construction
+- Alternatively, restructure so `BaseToolConfig` is defined in a separate leaf module that both `config.py` and `base.py` can import without cycles
 
-- `grep -ri "mistral.vibe\|mistral-vibe\|Mistral Vibe" vibe/ tests/ docs/ *.md *.yml` returns zero matches (excluding lines containing `api.mistral.ai`, `codestral.mistral.ai`, `mistralai` SDK, or `MISTRAL_API_KEY`)
-- `grep -ri "Mistral AI" vibe/ tests/ docs/ *.md *.yml` returns zero matches (excluding lines referencing the external Mistral API provider configuration)
-- `uv run pytest` — all tests pass
-- `uv run ruff check` — zero lint errors
-- `uv run ruff format --check` — zero format violations
-- `blitzy --help` outputs help text containing "Blitzy Agent" and zero mentions of "Mistral Vibe"
-- `blitzy-acp` launches without error
+### 0.7.2 Cognitive Complexity Analysis
 
-**Manual Verification Criteria:**
+The current codebase has **15 C901 violations** reported by `ruff check --select C901 vibe/`. The refactoring must achieve a count ≤ this baseline after completion. Key violations and resolution strategies:
 
-- Welcome screen displays "Blitzy Agent" with purple-themed UI
-- Accent colors in TUI visually match `#5B39F3` purple palette
-- Commit signature reads `Blitzy Agent <agent@blitzy.com>`
-
-### 0.7.3 Boundary Edge Cases
-
-The following specific cases require careful handling:
-
-| Location | String | Decision | Rationale |
+| Function | File | Current Score | Resolution Strategy |
 |---|---|---|---|
-| `vibe/core/config.py:279` | `name="mistral-vibe-cli-latest"` | PRESERVE | This is a model name, not app branding |
-| `vibe/setup/onboarding/screens/api_key.py:21` | `"Mistral AI Studio"` | PRESERVE | Refers to the external API console |
-| `vibe/core/config.py:264-269` | `name="mistral"`, `api_base="https://api.mistral.ai/v1"` | PRESERVE | External API provider config |
-| `tests/conftest.py:27` | `"name": "mistral-vibe-cli-latest"` | PRESERVE | Model name in test config |
-| `tests/acp/test_acp.py:76` | `"mistral-vibe-cli-latest"` | PRESERVE | Model name assertion |
-| `vibe/core/utils.py:24` | `VIBE_STOP_EVENT_TAG` | PRESERVE | Internal constant |
-| `vibe/core/utils.py:25` | `VIBE_WARNING_TAG` | PRESERVE | Internal constant |
-| `vibe/__init__.py:5` | `VIBE_ROOT` | PRESERVE | Internal path constant |
-| `vibe/core/config.py:302` | `class VibeConfig` | PRESERVE | Internal class name |
-| `vibe/core/paths/global_paths.py:28` | `VIBE_HOME = GlobalPath(...)` | Variable name PRESERVE, but the resolver function must return `~/.blitzy` and check `BLITZY_HOME` env var | The Python variable name `VIBE_HOME` is an internal identifier, but the resolved path and env var it reads must change |
+| `apply_changes` | `vibe/core/autocompletion/file_indexer/store.py` | 14 | Extract inner branch logic into named helper methods |
+| `check_allowlist_denylist` | `vibe/core/tools/builtins/bash.py` | 14 | Extract platform-specific checks into separate methods |
+| `get_git_status` | `vibe/core/system_prompt.py` | 13 | Extract subprocess calls into helper functions |
+| `fetch_update` | `vibe/cli/update_notifier/adapters/github_update_gateway.py` | 13 | Break condition chain into early-return guard clauses |
+| `_run_agent_loop` | `vibe/acp/acp_agent_loop.py` | 12 | Partially resolved by AgentLoop decomposition in Batch 2 |
+| `_build_patterns` | `vibe/core/autocompletion/file_indexer/ignore_rules.py` | 12 | Extract pattern compilation into helper |
+| `get_universal_system_prompt` | `vibe/core/system_prompt.py` | 12 | Extract subsections into dedicated builder methods |
+| `__add__` | `vibe/core/types.py` | 12 | Simplify via early returns |
+| `run` (task.py) | `vibe/core/tools/builtins/task.py` | 12 | Extract subagent setup logic |
+| `_on_key` | `vibe/cli/textual_ui/widgets/chat_input/text_area.py` | 12 | Decomposed via ChatTextArea god class split |
+| `_stream_assistant_events` | `vibe/core/agent_loop.py` | 11 | Extracted to TurnRunner in Batch 2 |
+| `_handle_tool_calls` | `vibe/core/agent_loop.py` | 11 | Extracted to ToolExecutor in Batch 2 |
+| `_handle_agent_loop_turn` | `vibe/cli/textual_ui/app.py` | 11 | Method remains in VibeApp but simplified via delegation |
+| `action_interrupt` | `vibe/cli/textual_ui/app.py` | 11 | Simplified via guard clauses |
+| `copy_selection_to_clipboard` | `vibe/cli/clipboard.py` | 11 | Extract fallback chain into named strategies |
+
+### 0.7.3 Exception Narrowing — Sibling-Pattern Analysis (R9)
+
+Rule R9 mandates that when narrowing an `except Exception` in one ACP tool wrapper, the identical pattern must be applied to **all** ACP tool wrappers. The ACP builtins share a consistent pattern:
+
+**ACP Tool Wrapper Pattern (5 builtins):**
+
+All ACP builtin tools in `vibe/acp/tools/builtins/` follow the same structural pattern:
+- `_load_state()` → may raise `OSError`, `pydantic.ValidationError`
+- `_send_in_progress_session_update()` → may raise `httpx.HTTPError`, `asyncio.CancelledError`
+- `client.create_terminal()` / `client.read_text_file()` / `client.write_text_file()` — ACP RPC calls → may raise `ConnectionError`, `httpx.HTTPError`, `asyncio.CancelledError`
+- File/process operations → may raise `OSError`, `FileNotFoundError`, `PermissionError`
+
+| ACP Builtin | Exception Instances | Consistent Narrowed Types |
+|---|---|---|
+| `bash.py` | 3 | `OSError`, `FileNotFoundError`, `asyncio.CancelledError`, `pydantic.ValidationError` |
+| `read_file.py` | 1 | `OSError`, `FileNotFoundError`, `asyncio.CancelledError`, `pydantic.ValidationError` |
+| `search_replace.py` | 2 | `OSError`, `FileNotFoundError`, `asyncio.CancelledError`, `pydantic.ValidationError` |
+| `todo.py` | 0 | N/A (no bare excepts) |
+| `write_file.py` | 1 | `OSError`, `FileNotFoundError`, `asyncio.CancelledError`, `pydantic.ValidationError` |
+
+The `vibe/acp/tools/base.py` base class (`_send_in_progress_session_update`) has 1 bare except that follows the same pattern and must be narrowed identically.
+
+### 0.7.4 Validation Framework Baseline Measurements
+
+The user specifies a comprehensive 7-gate validation framework. Pre-refactor baseline values measured from the current repository state:
+
+| Metric | Command | Current Value |
+|---|---|---|
+| Python version | `python --version` | 3.12.3 |
+| Import smoke test | `python -c "from vibe.core.agent_loop import AgentLoop; ..."` | OK |
+| AgentLoop methods | `grep -c "    def " vibe/core/agent_loop.py` | 17 |
+| VibeApp methods | `grep -c "    def " vibe/cli/textual_ui/app.py` | 29 |
+| QuestionApp methods | `grep -c "    def " vibe/cli/textual_ui/widgets/question_app.py` | 45 |
+| ChatTextArea methods | `grep -c "    def " vibe/cli/textual_ui/widgets/chat_input/text_area.py` | 29 |
+| WelcomeBanner methods | `grep -c "    def " vibe/cli/textual_ui/widgets/welcome.py` | 20 |
+| Bare exception count (prod) | `grep -rn "except Exception" vibe/ --include="*.py" \| grep -v tests/ \| wc -l` | 90 |
+| Bare exception count (ACP) | `grep -rn "except Exception" vibe/acp/ --include="*.py" \| wc -l` | 12 |
+| C901 violations | `uv run ruff check --select C901 vibe/` | 15 |
+| Ruff version | `uv run ruff --version` | 0.14.7 |
+| Pyright version | `uv run pyright --version` | 1.1.407 |
+| Total Python files | `find vibe/ -name "*.py" \| wc -l` | 126 |
+| Total lines of code | `find vibe/ -name "*.py" -exec cat {} + \| wc -l` | 19,445 |
+| Test file count | `find tests/ -name "*.py" \| wc -l` | 102 |
+
+### 0.7.5 Dead Code Removal Analysis
+
+The single dead code instance at `vibe/core/tools/base.py:128` consists of an unreachable `yield` statement after a `raise NotImplementedError` in the abstract `run()` method:
+
+```python
+async def run(self, args, ctx=None):
+    raise NotImplementedError  # pragma: no cover
+    yield  # type: ignore[misc]  ← DEAD CODE
+```
+
+The `yield` exists to make `run()` a valid `AsyncGenerator` at the syntax level, but it is unreachable after the `raise`. The `# type: ignore[misc]` annotation also violates R8 if it were a new addition. Resolution: remove the `yield` line and restructure the abstract method signature to properly type as `AsyncGenerator` without requiring an unreachable `yield` statement, or use an `if False: yield` pattern that satisfies the generator requirement without dead code flags.
 
 
-## 0.8 References
+## 0.8 Refactoring Rules
 
-### 0.8.1 Files and Folders Searched
+### 0.8.1 User-Specified Refactoring Rules
 
-The following files and folders were retrieved and analyzed to derive the conclusions in this Agent Action Plan:
+The user has defined **10 explicit rules** that govern all refactoring activities. Each rule is captured verbatim with its verification command and scope:
 
-**Root-level files read:**
-- `pyproject.toml` — package metadata, dependencies, build config, scripts, tool config
-- `action.yml` — GitHub Action definition
-- `vibe-acp.spec` — PyInstaller spec for ACP binary
-- `flake.nix` — Nix flake definition (brand reference confirmed via grep)
-- `.python-version` — Python 3.12 confirmed
-- `.github/CODEOWNERS` — team ownership
+| Rule | Name | Requirement | Verification Command | Scope |
+|---|---|---|---|---|
+| R1 | Extraction over rewrite | Refactored code MUST be extracted (move + delegate), not rewritten. Original logic preserved verbatim. | `git diff` of moved functions shows only import/self-reference changes, no logic edits | All god class decomposition |
+| R2 | Composition over inheritance | Extracted handlers MUST be composed into parent classes via `__init__` injection, not mixin or inheritance | `grep` for no new `class X(ExtractedHandler)` relationships | VibeApp, AgentLoop, QuestionApp |
+| R3 | Protocol module purity | `vibe/core/protocols.py` MUST contain only `typing.Protocol` subclasses, `typing.TypeAlias` definitions, and stdlib type imports | `grep "^from vibe\." vibe/core/protocols.py \| grep -v "__future__"` returns empty | Circular import resolution |
+| R4 | Exception specificity | Each `except Exception` replacement MUST use the narrowest applicable type(s) from Section 3 mapping. Bare `except Exception` and `except BaseException` are PROHIBITED | `grep -rn "except Exception" vibe/ --include="*.py" \| grep -v tests/` returns empty | All `vibe/` files |
+| R5 | One PR per god class | Each god class decomposition MUST be a separate pull request. No single PR modifies more than one god class | PR review scope validation | VibeApp, AgentLoop, QuestionApp, ChatTextArea, WelcomeBanner |
+| R6 | Explicit public API | Every new `.py` file MUST export its public API via `__all__` | `grep -L "__all__" <new_files>` returns empty | All newly created modules |
+| R7 | PEP 563 convention | `from __future__ import annotations` MUST remain in all `vibe/` files and be added to all new files | `grep -rL "from __future__ import annotations" vibe/ --include="*.py"` returns only `__init__.py` files | All `vibe/` files |
+| R8 | No new suppressions | Refactoring MUST NOT introduce new `# noqa`, `# type: ignore`, or `# pragma: no cover` annotations | `git diff --unified=0 \| grep -c "noqa\|type: ignore"` returns 0 | All changed files |
+| R9 | Sibling-pattern application | When narrowing an `except Exception` in one ACP tool wrapper, the same type narrowing MUST be applied to ALL ACP tool wrappers with the identical pattern | `grep -rn "except Exception" vibe/acp/ --include="*.py"` returns empty | All `vibe/acp/` files |
+| R10 | No new dependencies | Refactoring MUST NOT add entries to `pyproject.toml` `[project.dependencies]` or `[project.optional-dependencies]` | `git diff pyproject.toml` shows no dependency changes | Entire refactor |
 
-**Source code files read in full:**
-- `vibe/__init__.py` — `VIBE_ROOT` and `__version__` constants
-- `vibe/core/config.py` — `VibeConfig`, `SettingsConfigDict`, `env_prefix`, provider/model defaults
-- `vibe/core/system_prompt.py` — commit signature, system prompt assembly, `ProjectContextProvider`
-- `vibe/core/utils.py` — user-agent string, internal constants (`VIBE_STOP_EVENT_TAG`, `VIBE_WARNING_TAG`)
-- `vibe/core/paths/global_paths.py` — `_DEFAULT_VIBE_HOME`, `VIBE_HOME` env var, all global path definitions
-- `vibe/core/paths/config_paths.py` — local `.vibe/` config directory resolution
-- `vibe/core/prompts/cli.md` — CLI system prompt template
-- `vibe/core/prompts/tests.md` — test persona prompt
-- `vibe/cli/entrypoint.py` — CLI argparse description and trusted folder flow
-- `vibe/cli/cli.py` — CLI bootstrap, `Hello Vibe!` greeting, session loading
-- `vibe/cli/textual_ui/app.tcss` — complete Textual CSS stylesheet (1028 lines)
-- `vibe/cli/textual_ui/terminal_theme.py` — OSC terminal color probe, `Theme` construction
-- `vibe/cli/textual_ui/widgets/welcome.py` — `WelcomeBanner` widget, gradient colors, banner text
-- `vibe/cli/textual_ui/app.py` — `VibeApp` (targeted lines 1220-1265 for brand references)
-- `vibe/cli/update_notifier/update.py` — `UPDATE_COMMANDS` list (targeted line 125)
-- `vibe/cli/update_notifier/adapters/github_update_gateway.py` — User-Agent header (targeted line 34)
-- `vibe/acp/acp_agent_loop.py` — `VibeAcpAgentLoop`, ACP `Implementation` metadata, auth methods
-- `vibe/acp/entrypoint.py` — ACP CLI bootstrap, argparse description, history greeting
-- `vibe/whats_new.md` — release notes
+### 0.8.2 Immutable Preservation Constraints
 
-**Folders explored (with `get_source_folder_contents`):**
-- Root (`""`) — top-level structure
-- `vibe/` — package root
-- `vibe/core/` — core runtime modules
-- `vibe/core/prompts/` — prompt templates
-- `vibe/cli/` — CLI modules
-- `vibe/cli/textual_ui/` — Textual UI package
-- `vibe/cli/textual_ui/widgets/` — widget library
-- `vibe/acp/` — ACP layer
-- `tests/` — test suites
+The following elements are explicitly marked as immutable and must not be changed under any circumstances:
 
-**Grep searches conducted:**
-- `grep -rn "Mistral Vibe\|mistral-vibe\|Mistral AI\|mistral_vibe\|Mistral.Vibe\|vibe@mistral\|mistralai/mistral-vibe"` across all `*.py`, `*.md`, `*.toml`, `*.yml`, `*.yaml`, `*.spec`, `*.tcss` files
-- `grep -rn "VIBE_\|Hello Vibe\|~/.vibe\|\.vibe/"` across source files (excluding internal constants)
-- `grep -rn "Mistral Vibe\|mistral-vibe\|Mistral AI\|mistral_vibe\|vibe@mistral\|Hello Vibe"` specifically in `vibe/` and `tests/` Python files
-- `grep -rn "Mistral\|mistral\|Vibe\|vibe"` in `vibe/setup/` directory
-- `grep -rn "mistral-vibe\|Mistral Vibe\|Mistral AI\|mistral_vibe"` in `.github/`, `distribution/`, `scripts/`, and `docs/` directories
-- `find . -name "vibe-acp.spec"` and `find . -name "*.tcss"` for file discovery
+- **`AgentLoop.act()` signature and return type** — All callers (21 test files + 4 production modules) depend on this
+- **`BaseTool` generic type parameters and `invoke()` contract** — 20+ tool implementations depend on this interface
+- **`VibeConfig` field names and TOML schema** — Configuration precedence chain is load-bearing
+- **`VibeApp.__init__()` constructor signature** — Test fixtures and CLI launcher depend on this
+- **`VibeAcpAgentLoop` ACP protocol messages** — IDE integration contracts
+- **`pyproject.toml` entry points (`[project.scripts]`):**
+  - `blitzy = "vibe.cli.entrypoint:main"`
+  - `blitzy-acp = "vibe.acp.entrypoint:main"`
+- **All `vibe/core/tools/builtins/prompts/*.md` files** — 9 markdown prompt files are immutable
 
-**Setup/onboarding files read via grep or bash:**
-- `vibe/setup/onboarding/__init__.py` — setup complete message
-- `vibe/setup/onboarding/screens/welcome.py` — `WELCOME_HIGHLIGHT` constant, animation logic
-- `vibe/setup/onboarding/screens/api_key.py` — API key screen branding (Mistral AI Studio preserved)
-- `vibe/setup/trusted_folders/trust_folder_dialog.py` — trust dialog message
-- `distribution/zed/extension.toml` — full Zed extension manifest
-- `scripts/install.sh`, `scripts/prepare_release.py` — release scripts (via grep)
-- `tests/conftest.py` — test configuration fixtures
+### 0.8.3 Special Instructions and Constraints
 
-**Test files searched for brand strings:**
-- `tests/acp/test_initialize.py` — ACP initialization assertions
-- `tests/acp/test_acp.py` — model name check (preserved)
-- `tests/onboarding/test_run_onboarding.py` — onboarding message assertion
-- `tests/update_notifier/test_pypi_update_gateway.py` — PyPI project name assertions
-- `tests/update_notifier/test_ui_update_notification.py` — update notification assertions
+**Minimal Change Mandate:**
+- Extracted methods MUST be moved verbatim — logic edits are PROHIBITED during extraction
+- Import paths in dependent files updated to point to new locations
+- Original class retains thin delegation methods (one-liners calling extracted handler)
+- Test files updated ONLY for import path changes, not logic
 
-**Tech spec sections retrieved:**
-- Section 1.1 EXECUTIVE SUMMARY — project overview and context
+**Batch Execution Ordering:**
+The user specifies 4 logical batches with strict prerequisite dependencies. While the Blitzy platform executes in one phase, the internal ordering must respect:
+- Batch 1 (circular import resolution) has no prerequisites
+- Batch 2 (AgentLoop decomposition) depends on Batch 1
+- Batch 3 (VibeApp decomposition) depends on Batch 1
+- Batch 4 (remaining classes + exception narrowing + cleanup) depends on Batches 1–3
 
-### 0.8.2 Attachments
+**Validation Gate Requirements:**
+The user specifies 7 validation gates (V1–V7) with 17 final acceptance checks. Every gate must pass before proceeding. Key validation commands include:
+- `uv run pytest -x --timeout=10` — Full test suite
+- `uv run ruff check vibe/` — Linting
+- `uv run pyright vibe/` — Type checking
+- Import smoke tests for all key modules
+- CLI smoke test via `blitzy --help`
+- Method count verification via `grep -c "    def "` for each decomposed class
 
-No attachments were provided for this project. No Figma URLs or external design files were referenced.
+### 0.8.4 Implementation Rules from Project Standards
 
-### 0.8.3 External References
+From `AGENTS.md` and `pyproject.toml` tool configuration, the following project-level rules apply to all refactoring:
 
-No web searches were required for this rebranding task. The brand mapping is fully specified by the user, and the purple color palette values (`#5B39F3`, `#7C5DF5`, `#4A2DD4`, `#8B7FC7`) are provided in the task specification. The Textual CSS theming system uses standard `$variable` tokens documented in the Textual framework.
+- **Ruff configuration:** Line length 88, target `py312`, preview mode enabled
+- **Ruff lint rules:** `F`, `I`, `D2`, `UP`, `TID`, `ANN`, `PLR`, `B0`, `B905`, `DOC102`, `RUF022`, `RUF010`, `RUF012`, `RUF019`, `RUF100`
+- **Ruff isort:** `known-first-party = ["vibe"]`, `ban-relative-imports = "all"`, `required-imports = ["from __future__ import annotations"]`
+- **Ruff pylint limits:** `max-statements=50`, `max-branches=15`, `max-locals=15`, `max-args=9`, `max-returns=6`, `max-nested-blocks=4`
+- **Pyright:** `pythonVersion = "3.12"`, strict mode on `vibe/**/*.py` and `tests/**/*.py`
+- **Pytest:** `-vvvv -q -n auto --durations=10 --import-mode=importlib`, timeout=10s
+
+### 0.8.5 User-Specified Implementation Rules (Project-Level)
+
+The user has provided 5 project-level implementation rules that apply to all deliverables:
+
+- **Observability:** Ship observability with the initial implementation. Verify structured logging, correlation IDs, and health checks are present. Check existing logging in the codebase and fill gaps — the refactoring must not degrade existing logging in any module.
+- **Onboarding & Continued Development:** Update `README.md`, `CONTRIBUTING.md`, and any setup guides to reflect structural changes. Include suggested next tasks discovered during refactoring.
+- **Executive Presentation:** Deliver an executive summary as a `reveal.js` HTML artifact covering what was done, architectural changes, risks, and onboarding. Include Mermaid diagrams and visual elements on every slide.
+- **Explainability:** Document all non-trivial decisions in a decision log (Markdown table). Include a bidirectional traceability matrix mapping source constructs to target implementations — 100% coverage, no gaps.
+- **Visual Architecture Documentation:** All visual documentation uses Mermaid diagrams with descriptive titles and legends. Both before-state and after-state architectures must be shown for all modifications.
+
+
+## 0.9 References
+
+### 0.9.1 Codebase Files and Folders Searched
+
+The following files and folders were systematically explored to derive all conclusions in this Agent Action Plan:
+
+**Root-Level Configuration and Documentation:**
+
+| File | Purpose | Key Findings |
+|---|---|---|
+| `pyproject.toml` | Package metadata, dependencies, tool config | Python ≥3.12, 19 runtime deps, 13 dev deps, ruff/pyright config, entry points |
+| `README.md` | User-facing documentation | Installation and usage guide |
+| `CONTRIBUTING.md` | Contributor guide | Local setup, testing, linting expectations |
+| `AGENTS.md` | Python 3.12 coding standards | Modern idiom requirements, `uv` usage |
+| `CHANGELOG.md` | Release history | Version tracking |
+
+**Core Package Files Examined:**
+
+| File / Folder | Lines | Exploration Depth | Key Findings |
+|---|---|---|---|
+| `vibe/__init__.py` | — | Read summary | Package root, `__version__ = "0.1.0"` |
+| `vibe/core/agent_loop.py` | 956 | Full import analysis, method count | 17 methods, 4 bare excepts, C901 violations |
+| `vibe/core/types.py` | 393 | Import chain analysis | `TYPE_CHECKING` guard for `BaseTool`, `else: BaseTool = Any` fallback |
+| `vibe/core/tools/base.py` | 336 | Import chain, dead code analysis | Runtime import from `types.py`, dead code at line 128 |
+| `vibe/core/config.py` | 605 | Import chain, `BaseToolConfig` usage analysis | Top-level runtime import of `BaseToolConfig`, deferred `ToolManager` import |
+| `vibe/core/tools/manager.py` | 341 | Import chain analysis | `TYPE_CHECKING` guard for `VibeConfig`, 6 bare excepts |
+| `vibe/core/tools/mcp.py` | 358 | Summary and exception analysis | 4 bare excepts, MCP proxy generation |
+| `vibe/core/tools/ui.py` | 68 | Summary | `ToolUIData` Protocol definition |
+| `vibe/core/llm/types.py` | 120 | Full file read | `BackendLike` Protocol definition, `TYPE_CHECKING` for `ModelConfig` |
+| `vibe/core/middleware.py` | — | Summary | Middleware pipeline, `ConversationMiddleware` Protocol |
+| `vibe/core/session/session_loader.py` | 157 | Exception analysis | 1 bare except |
+| `vibe/core/session/session_logger.py` | 316 | Exception analysis | 5 bare excepts |
+| `vibe/core/session/session_migration.py` | 41 | Exception analysis | 1 bare except |
+| `vibe/core/system_prompt.py` | — | Exception analysis | 3 bare excepts |
+| `vibe/core/utils.py` | — | Exception analysis | 2 bare excepts |
+| `vibe/core/agents/manager.py` | — | Exception analysis | 1 bare except |
+| `vibe/core/skills/manager.py` | — | Exception analysis | 1 bare except |
+| `vibe/core/llm/exceptions.py` | 195 | Exception analysis | 1 bare except |
+| `vibe/core/autocompletion/file_indexer/` | — | Exception analysis | 4 bare excepts across 3 files |
+| `vibe/core/tools/builtins/` | — | Exception analysis | 7 bare excepts across 5 files |
+
+**CLI Package Files Examined:**
+
+| File / Folder | Lines | Exploration Depth | Key Findings |
+|---|---|---|---|
+| `vibe/cli/textual_ui/app.py` | 1,215 | Import analysis, method count, exception scan | 29 methods, 19 bare excepts, 2 C901 violations |
+| `vibe/cli/textual_ui/handlers/__init__.py` | 5 | Full read | Re-exports `EventHandler` only |
+| `vibe/cli/textual_ui/handlers/event_handler.py` | 164 | Summary | Existing event handler pattern |
+| `vibe/cli/textual_ui/widgets/question_app.py` | 479 | Method count | 45 methods |
+| `vibe/cli/textual_ui/widgets/chat_input/text_area.py` | 358 | Method count, C901 check | 29 methods, `_on_key` C901=12 |
+| `vibe/cli/textual_ui/widgets/welcome.py` | 283 | Method count, exception scan | 20 methods, 1 bare except |
+| `vibe/cli/textual_ui/widgets/chat_input/container.py` | — | Exception scan | 1 bare except |
+| `vibe/cli/cli.py` | — | Exception scan | 3 bare excepts |
+| `vibe/cli/entrypoint.py` | — | Exception scan | 1 bare except |
+| `vibe/cli/clipboard.py` | — | Exception and C901 scan | 1 bare except, C901=11 |
+| `vibe/cli/terminal_setup.py` | — | Exception scan | 4 bare excepts |
+| `vibe/cli/autocompletion/path_completion.py` | — | Exception scan | 1 bare except |
+| `vibe/cli/update_notifier/adapters/pypi_update_gateway.py` | 107 | Exception scan | 2 bare excepts |
+| `vibe/cli/update_notifier/adapters/github_update_gateway.py` | 101 | C901 check | C901=13 |
+
+**ACP Package Files Examined:**
+
+| File / Folder | Lines | Exploration Depth | Key Findings |
+|---|---|---|---|
+| `vibe/acp/acp_agent_loop.py` | 550 | Exception scan, C901 check | 2 bare excepts, C901=12 |
+| `vibe/acp/entrypoint.py` | 81 | Exception scan | 2 bare excepts |
+| `vibe/acp/tools/base.py` | 100 | Exception scan | 1 bare except |
+| `vibe/acp/tools/builtins/bash.py` | 134 | Exception scan | 3 bare excepts |
+| `vibe/acp/tools/builtins/read_file.py` | 54 | Exception scan | 1 bare except |
+| `vibe/acp/tools/builtins/search_replace.py` | 129 | Exception scan | 2 bare excepts |
+| `vibe/acp/tools/builtins/todo.py` | 65 | Exception scan | 0 bare excepts |
+| `vibe/acp/tools/builtins/write_file.py` | 98 | Exception scan | 1 bare except |
+
+**Test Directory Examined:**
+
+| Folder | Files | Exploration Depth | Key Findings |
+|---|---|---|---|
+| `tests/` (root) | 102 Python files | Directory listing, import grep analysis | 21 files import AgentLoop, 9 import VibeApp, 30 import types, 20 import tools.base, 34 import config |
+| `tests/acp/test_acp.py` | 953 | Deep nesting check | Deep nesting at ~line 303 (test-only, out of scope) |
+| `tests/stubs/fake_client.py` | — | Class identification | `FakeClient` is test-only, out of scope |
+| `tests/core/test_trusted_folders.py` | — | Class identification | `TestTrustedFoldersManager` is test-only, out of scope |
+
+**Technical Specification Sections Retrieved:**
+
+| Section | Key Information Used |
+|---|---|
+| 1.1 Executive Summary | Project overview, entry points, Python 3.12 requirement |
+| 3.1 Programming Languages | Python 3.12 enforcement points, language features |
+| 3.2 Frameworks & Libraries | Complete dependency inventory with exact version constraints |
+| 5.1 High-Level Architecture | Architectural layers, data flow, component relationships |
+| 5.2 Component Details | Agent Loop, Config Manager, Tool Framework, LLM Backend, CLI Surface, ACP Layer specifications |
+
+### 0.9.2 Verification Commands Executed
+
+| Command | Purpose | Result |
+|---|---|---|
+| `find / -name ".blitzyignore"` | Check for ignore patterns | None found |
+| `python3 --version` | Verify Python runtime | 3.12.3 |
+| `uv --version` | Verify package manager | 0.11.2 |
+| `uv sync --dev` | Install all dependencies | Success |
+| `uv run python -c "from vibe.core.agent_loop import AgentLoop; ..."` | Import smoke test | OK |
+| `uv run ruff --version` | Verify linter | 0.14.7 |
+| `uv run pyright --version` | Verify type checker | 1.1.407 |
+| `grep -c "    def " <god_class_files>` | Method counts for all 5 god classes | 17, 29, 45, 29, 20 |
+| `grep -rn "except Exception" vibe/ --include="*.py" \| grep -v tests/ \| wc -l` | Count bare exceptions | 90 |
+| `uv run ruff check --select C901 vibe/` | Cognitive complexity violations | 15 violations |
+| `find vibe/ -name "*.py" \| wc -l` | Count source files | 126 |
+| `find vibe/ -name "*.py" -exec cat {} + \| wc -l` | Count total lines | 19,445 |
+| `find tests/ -name "*.py" \| wc -l` | Count test files | 102 |
+| Multiple `grep -rn` commands | Import chain analysis, TYPE_CHECKING guards | Detailed circular dependency mapping |
+
+### 0.9.3 Attachments
+
+No attachments were provided for this project. No Figma URLs were specified.
+
+### 0.9.4 External References
+
+No external URLs, Figma designs, or third-party documentation were referenced in the user's prompt beyond the codebase itself. All analysis is derived from direct repository inspection and the existing technical specification document.
 
 

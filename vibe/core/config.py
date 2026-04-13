@@ -208,7 +208,7 @@ class _MCPHttpFields(BaseModel):
             if not any(h.lower() == target.lower() for h in hdrs):
                 try:
                     value = (self.api_key_format or "{token}").format(token=token)
-                except Exception:
+                except (KeyError, ValueError, IndexError):
                     value = token
                 hdrs[target] = value
         return hdrs

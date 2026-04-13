@@ -9,9 +9,9 @@ from typing import TYPE_CHECKING, Annotated, Any, ClassVar, Literal
 from uuid import uuid4
 
 if TYPE_CHECKING:
-    from vibe.core.tools.base import BaseTool
+    from vibe.core.protocols import ToolLike
 else:
-    BaseTool = Any
+    ToolLike = Any
 
 from pydantic import (
     BaseModel,
@@ -322,14 +322,14 @@ class ReasoningEvent(BaseEvent):
 
 class ToolCallEvent(BaseEvent):
     tool_name: str
-    tool_class: type[BaseTool]
+    tool_class: type[ToolLike]
     args: BaseModel
     tool_call_id: str
 
 
 class ToolResultEvent(BaseEvent):
     tool_name: str
-    tool_class: type[BaseTool] | None
+    tool_class: type[ToolLike] | None
     result: BaseModel | None = None
     error: str | None = None
     skipped: bool = False

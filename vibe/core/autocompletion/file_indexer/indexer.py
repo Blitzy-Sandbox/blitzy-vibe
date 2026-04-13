@@ -102,7 +102,7 @@ class FileIndexer:
         if not self._shutdown:
             try:
                 self.shutdown()
-            except Exception:
+            except OSError:
                 pass
 
     def _start_background_rebuild(self, root: Path) -> None:
@@ -149,7 +149,7 @@ class FileIndexer:
 
             with self._rebuild_lock:
                 self._active_rebuilds.pop(root, None)
-        except Exception:
+        except OSError:
             with self._rebuild_lock:
                 self._active_rebuilds.pop(root, None)
         finally:

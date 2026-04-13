@@ -103,7 +103,7 @@ class IgnoreRules:
         if gitignore_path.exists():
             try:
                 text = gitignore_path.read_text(encoding="utf-8")
-            except Exception:
+            except OSError:
                 return patterns
 
             for line in text.splitlines():

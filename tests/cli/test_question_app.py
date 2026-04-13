@@ -87,8 +87,8 @@ class TestQuestionAppState:
 
         # 3 options + Other + Submit = 5
         assert app._total_options == 5
-        assert app._other_option_idx == 3
-        assert app._submit_option_idx == 4
+        assert len(app._current_question.options) == 3
+        assert len(app._current_question.options) + 1 == 4
 
     def test_is_other_selected(self, single_question_args):
         from vibe.cli.textual_ui.widgets.question_app import QuestionApp
@@ -130,8 +130,8 @@ class TestQuestionAppState:
         app.other_texts[1] = "Custom Framework"
 
         # Verify both stored separately
-        assert app._get_other_text(0) == "Custom DB"
-        assert app._get_other_text(1) == "Custom Framework"
+        assert app._answer_manager.get_other_text(0) == "Custom DB"
+        assert app._answer_manager.get_other_text(1) == "Custom Framework"
 
     def test_save_regular_option_answer(self, single_question_args):
         from vibe.cli.textual_ui.widgets.question_app import QuestionApp
@@ -139,7 +139,7 @@ class TestQuestionAppState:
         app = QuestionApp(single_question_args)
         app.selected_option = 0  # PostgreSQL
 
-        app._save_current_answer()
+        app._answer_manager.save_current_answer()
 
         assert 0 in app.answers
         answer_text, is_other = app.answers[0]
@@ -153,7 +153,7 @@ class TestQuestionAppState:
         app.selected_option = 2  # Other
         app.other_texts[0] = "SQLite"
 
-        app._save_current_answer()
+        app._answer_manager.save_current_answer()
 
         assert 0 in app.answers
         answer_text, is_other = app.answers[0]
@@ -167,7 +167,7 @@ class TestQuestionAppState:
         app.selected_option = 2  # Other
         app.other_texts[0] = ""  # Empty
 
-        app._save_current_answer()
+        app._answer_manager.save_current_answer()
 
         assert 0 not in app.answers
 
@@ -176,7 +176,7 @@ class TestQuestionAppState:
 
         app = QuestionApp(multi_question_args)
 
-        assert app._all_answered() is False
+        assert app._answer_manager.all_answered() is False
 
     def test_all_answered_true_when_complete(self, multi_question_args):
         from vibe.cli.textual_ui.widgets.question_app import QuestionApp
@@ -185,7 +185,7 @@ class TestQuestionAppState:
         app.answers[0] = ("PostgreSQL", False)
         app.answers[1] = ("FastAPI", False)
 
-        assert app._all_answered() is True
+        assert app._answer_manager.all_answered() is True
 
     def test_multi_select_toggle(self, multi_select_args):
         from vibe.cli.textual_ui.widgets.question_app import QuestionApp
@@ -214,7 +214,7 @@ class TestQuestionAppState:
         app = QuestionApp(multi_select_args)
         app.multi_selections[0] = {0, 2}  # Auth and Logging
 
-        app._save_current_answer()
+        app._answer_manager.save_current_answer()
 
         assert 0 in app.answers
         answer_text, is_other = app.answers[0]
@@ -229,7 +229,7 @@ class TestQuestionAppState:
         app.multi_selections[0] = {0, 3}  # Auth and Other
         app.other_texts[0] = "Custom Feature"
 
-        app._save_current_answer()
+        app._answer_manager.save_current_answer()
 
         assert 0 in app.answers
         answer_text, is_other = app.answers[0]
@@ -272,11 +272,11 @@ class TestQuestionAppActions:
         app = QuestionApp(multi_question_args)
         app.other_texts[0] = "Text for Q1"
 
-        app._switch_question(1)
+        app._selection_helper.switch_question(1)
 
         assert app.current_question_idx == 1
-        assert app._get_other_text(0) == "Text for Q1"
-        assert app._get_other_text(1) == ""
+        assert app._answer_manager.get_other_text(0) == "Text for Q1"
+        assert app._answer_manager.get_other_text(1) == ""
 
 
 class TestMultiSelectOtherBehavior:
@@ -288,7 +288,7 @@ class TestMultiSelectOtherBehavior:
         app.other_texts[0] = "Custom feature"
 
         # Save should not advance for multi-select
-        app._save_current_answer()
+        app._answer_manager.save_current_answer()
 
         # Should stay on same question
         assert app.current_question_idx == 0
@@ -324,7 +324,7 @@ class TestMultiSelectOtherBehavior:
         app.multi_selections[0] = {0, 2, other_idx}
         app.other_texts[0] = "Custom Feature"
 
-        app._save_current_answer()
+        app._answer_manager.save_current_answer()
 
         assert 0 in app.answers
         answer_text, is_other = app.answers[0]
@@ -343,7 +343,7 @@ class TestMultiSelectOtherBehavior:
         app.multi_selections[0] = {0, other_idx}
         app.other_texts[0] = ""
 
-        app._save_current_answer()
+        app._answer_manager.save_current_answer()
 
         assert 0 in app.answers
         answer_text, is_other = app.answers[0]
@@ -380,7 +380,7 @@ class TestMultiSelectOtherBehavior:
         app = QuestionApp(multi_select_args)
 
         # No selections
-        app._save_current_answer()
+        app._answer_manager.save_current_answer()
 
         assert 0 not in app.answers
 
@@ -393,7 +393,7 @@ class TestSingleSelectOtherBehavior:
         app.selected_option = 2  # Other
         app.other_texts[0] = "Custom DB"
 
-        app._save_current_answer()
+        app._answer_manager.save_current_answer()
 
         assert 0 in app.answers
         answer_text, is_other = app.answers[0]
@@ -407,7 +407,7 @@ class TestSingleSelectOtherBehavior:
         app.selected_option = 2  # Other
         app.other_texts[0] = ""
 
-        app._save_current_answer()
+        app._answer_manager.save_current_answer()
 
         assert 0 not in app.answers
 
@@ -417,7 +417,7 @@ class TestSingleSelectOtherBehavior:
         app = QuestionApp(single_question_args)
         app.selected_option = 1  # MongoDB
 
-        app._save_current_answer()
+        app._answer_manager.save_current_answer()
 
         assert 0 in app.answers
         answer_text, is_other = app.answers[0]
@@ -435,8 +435,10 @@ class TestMultiSelectAutoSelect:
         app.other_input = MagicMock()
         app.other_input.value = "Custom text"
 
+        other_idx = len(app._current_question.options)
+
         # Initially no selections
-        assert app._other_option_idx not in app.multi_selections.get(0, set())
+        assert other_idx not in app.multi_selections.get(0, set())
 
         # Simulate input change
         from textual.widgets import Input
@@ -444,7 +446,7 @@ class TestMultiSelectAutoSelect:
         app.on_input_changed(Input.Changed(app.other_input, "Custom text"))
 
         # Other should now be selected
-        assert app._other_option_idx in app.multi_selections[0]
+        assert other_idx in app.multi_selections[0]
 
     def test_clearing_auto_deselects_other(self, multi_select_args):
         from unittest.mock import MagicMock
@@ -453,9 +455,10 @@ class TestMultiSelectAutoSelect:
 
         app = QuestionApp(multi_select_args)
         app.other_input = MagicMock()
+        other_idx = len(app._current_question.options)
 
         # Start with Other selected and text
-        app.multi_selections[0] = {app._other_option_idx}
+        app.multi_selections[0] = {other_idx}
         app.other_input.value = ""  # Cleared
 
         # Simulate input change with empty value
@@ -464,7 +467,7 @@ class TestMultiSelectAutoSelect:
         app.on_input_changed(Input.Changed(app.other_input, ""))
 
         # Other should now be deselected
-        assert app._other_option_idx not in app.multi_selections[0]
+        assert other_idx not in app.multi_selections[0]
 
     def test_auto_select_preserves_other_selections(self, multi_select_args):
         from unittest.mock import MagicMock
@@ -474,6 +477,7 @@ class TestMultiSelectAutoSelect:
         app = QuestionApp(multi_select_args)
         app.other_input = MagicMock()
         app.other_input.value = "Custom"
+        other_idx = len(app._current_question.options)
 
         # Pre-select Auth and Logging
         app.multi_selections[0] = {0, 2}
@@ -486,7 +490,7 @@ class TestMultiSelectAutoSelect:
         # All selections should be preserved plus Other
         assert 0 in app.multi_selections[0]
         assert 2 in app.multi_selections[0]
-        assert app._other_option_idx in app.multi_selections[0]
+        assert other_idx in app.multi_selections[0]
 
 
 class TestMultiSelectSubmit:

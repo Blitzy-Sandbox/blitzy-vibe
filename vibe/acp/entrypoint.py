@@ -4,6 +4,7 @@ import argparse
 from dataclasses import dataclass
 import os
 import sys
+import tomllib
 
 from vibe import __version__
 from vibe.core.config import VibeConfig
@@ -35,7 +36,7 @@ def bootstrap_config_files() -> None:
     if not CONFIG_FILE.path.exists():
         try:
             VibeConfig.save_updates(VibeConfig.create_default())
-        except Exception as e:
+        except (OSError, tomllib.TOMLDecodeError, ImportError) as e:
             logger.error(f"Could not create default config file: {e}")
             raise
 
@@ -43,7 +44,7 @@ def bootstrap_config_files() -> None:
         try:
             HISTORY_FILE.path.parent.mkdir(parents=True, exist_ok=True)
             HISTORY_FILE.path.write_text("Hello Blitzy!\n", "utf-8")
-        except Exception as e:
+        except OSError as e:
             logger.error(f"Could not create history file: {e}")
             raise
 

@@ -127,7 +127,7 @@ class TestAcpWriteFileExecution:
         self, mock_client: MockClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.chdir(tmp_path)
-        mock_client._write_error = RuntimeError("Permission denied")
+        mock_client._write_error = OSError("Permission denied")
 
         tool = WriteFile(
             config=WriteFileConfig(),

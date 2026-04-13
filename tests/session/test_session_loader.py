@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 import json
+import os
 from pathlib import Path
 import time
 
@@ -251,6 +252,10 @@ class TestSessionLoaderFindLatestSession:
         assert result is not None
         assert result == valid_session
 
+    @pytest.mark.skipif(
+        os.getuid() == 0,
+        reason="Root bypasses file permission checks; chmod(0) has no effect",
+    )
     def test_find_latest_session_skips_unreadable_messages_file(
         self, session_config: SessionLoggingConfig, create_test_session
     ) -> None:
@@ -267,6 +272,10 @@ class TestSessionLoaderFindLatestSession:
         assert result is not None
         assert result == valid_session
 
+    @pytest.mark.skipif(
+        os.getuid() == 0,
+        reason="Root bypasses file permission checks; chmod(0) has no effect",
+    )
     def test_find_latest_session_skips_unreadable_metadata_file(
         self, session_config: SessionLoggingConfig, create_test_session
     ) -> None:

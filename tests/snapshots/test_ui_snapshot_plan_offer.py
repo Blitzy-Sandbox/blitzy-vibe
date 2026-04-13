@@ -21,9 +21,9 @@ class PlanOfferSnapshotApp(BaseSnapshotTestApp):
     def __init__(self, gateway: FakeWhoAmIGateway):
         self._previous_api_key = os.environ.get("MISTRAL_API_KEY")
         os.environ["MISTRAL_API_KEY"] = "snapshot-api-key"
+        self._plan_offer_gateway = gateway
         super().__init__(
             config=default_config(),
-            plan_offer_gateway=gateway,
             update_cache_repository=FakeUpdateCacheRepository(),
         )
 

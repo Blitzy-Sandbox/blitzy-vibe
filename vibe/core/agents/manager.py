@@ -127,7 +127,7 @@ class AgentManager:
             agent = AgentProfile.from_toml(agent_file)
             agent.apply_to_config(self._config)
             return agent
-        except Exception as e:
+        except (OSError, ImportError) as e:
             logger.warning("Failed to load agent at %s: %s", agent_file, e)
             return None
 

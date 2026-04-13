@@ -6,6 +6,7 @@ import hashlib
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
+import httpx
 from mcp import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 from mcp.client.streamable_http import streamablehttp_client
@@ -65,7 +66,7 @@ class RemoteTool(BaseModel):
         if callable(dump):
             try:
                 v = dump()
-            except Exception:
+            except (ValueError, TypeError, AttributeError):
                 raise ValueError(
                     "inputSchema must be a dict or have a valid model_dump method"
                 )
@@ -96,7 +97,7 @@ class _MCPResultIn(BaseModel):
         if callable(dump):
             try:
                 v = dump()
-            except Exception:
+            except (ValueError, TypeError, AttributeError):
                 return None
         return v if isinstance(v, dict) else None
 
@@ -206,7 +207,7 @@ def create_mcp_http_proxy_tool_class(
                     startup_timeout_sec=self._startup_timeout_sec,
                     tool_timeout_sec=self._tool_timeout_sec,
                 )
-            except Exception as exc:
+            except (httpx.HTTPError, OSError) as exc:
                 raise ToolError(f"MCP call failed: {exc}") from exc
 
         @classmethod
@@ -332,7 +333,7 @@ def create_mcp_stdio_proxy_tool_class(
                     tool_timeout_sec=self._tool_timeout_sec,
                 )
                 yield result
-            except Exception as exc:
+            except OSError as exc:
                 raise ToolError(f"MCP stdio call failed: {exc!r}") from exc
 
         @classmethod

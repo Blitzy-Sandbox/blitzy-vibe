@@ -150,7 +150,7 @@ class SearchReplace(
             try:
                 if self.config.create_backup:
                     await self._backup_file(file_path)
-            except Exception:
+            except OSError:
                 pass
 
             await self._write_file(file_path, modified_content)
@@ -216,7 +216,7 @@ class SearchReplace(
             raise ToolError(f"Unicode decode error reading {file_path}: {e}") from e
         except PermissionError:
             raise ToolError(f"Permission denied reading file: {file_path}")
-        except Exception as e:
+        except OSError as e:
             raise ToolError(f"Unexpected error reading {file_path}: {e}") from e
 
     async def _backup_file(self, file_path: Path) -> None:
@@ -232,7 +232,7 @@ class SearchReplace(
             raise ToolError(f"Permission denied writing to file: {file_path}")
         except OSError as e:
             raise ToolError(f"OS error writing to {file_path}: {e}") from e
-        except Exception as e:
+        except (ValueError, TypeError, RuntimeError) as e:
             raise ToolError(f"Unexpected error writing to {file_path}: {e}") from e
 
     @final

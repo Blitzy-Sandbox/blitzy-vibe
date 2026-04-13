@@ -5,6 +5,7 @@ from collections.abc import AsyncGenerator
 from functools import lru_cache
 import os
 import signal
+import subprocess
 import sys
 from typing import ClassVar, Literal, final
 
@@ -350,7 +351,7 @@ class Bash(
 
         except (ToolError, asyncio.CancelledError):
             raise
-        except Exception as exc:
+        except (OSError, subprocess.SubprocessError) as exc:
             raise ToolError(f"Error running command {args.command!r}: {exc}") from exc
         finally:
             if proc is not None:

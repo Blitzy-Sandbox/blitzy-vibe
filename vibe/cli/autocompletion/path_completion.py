@@ -99,7 +99,7 @@ class PathCompletionController:
             with self._query_lock:
                 if query == self._last_query:
                     self._update_suggestions(suggestions)
-        except Exception:
+        except OSError:
             with self._query_lock:
                 self._pending_future = None
                 self._last_query = None

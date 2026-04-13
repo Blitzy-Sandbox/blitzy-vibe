@@ -35,7 +35,7 @@ async def migrate_sessions(session_config: SessionLoggingConfig) -> int:
             await SessionLogger.persist_messages(messages, session_dir)
             session_file.unlink()
             successful_migrations += 1
-        except Exception:
+        except (OSError, json.JSONDecodeError, KeyError, RuntimeError):
             continue
 
     return successful_migrations
