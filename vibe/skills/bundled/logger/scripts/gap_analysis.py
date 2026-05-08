@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """GCP kubectl Log Gap Analysis — Phase 1-4 processing."""
 
+from __future__ import annotations
+
+from collections import defaultdict
+from datetime import datetime
 import json
 import re
 import statistics
 import sys
-from collections import defaultdict
-from datetime import datetime, timezone
 
 if len(sys.argv) < 2:
     print("Usage: gap_analysis.py <log_file.json> [top_n]")
@@ -29,9 +31,9 @@ for i, entry in enumerate(raw):
         continue
     # Parse ISO 8601 with nanosecond precision
     # Truncate to microseconds for Python
-    ts_clean = re.sub(r'(\.\d{6})\d*Z$', r'\1+00:00', ts_str)
-    if ts_clean == ts_str and ts_str.endswith('Z'):
-        ts_clean = ts_str.replace('Z', '+00:00')
+    ts_clean = re.sub(r"(\.\d{6})\d*Z$", r"\1+00:00", ts_str)
+    if ts_clean == ts_str and ts_str.endswith("Z"):
+        ts_clean = ts_str.replace("Z", "+00:00")
     try:
         ts = datetime.fromisoformat(ts_clean)
     except ValueError:
@@ -45,7 +47,11 @@ for i, entry in enumerate(raw):
 
     severity = entry.get("severity", "DEFAULT")
     pod = entry.get("resource", {}).get("labels", {}).get("pod_name", "unknown")
-    service = entry.get("jsonPayload", {}).get("service", "") if isinstance(entry.get("jsonPayload"), dict) else ""
+    service = (
+        entry.get("jsonPayload", {}).get("service", "")
+        if isinstance(entry.get("jsonPayload"), dict)
+        else ""
+    )
 
     entries.append({
         "idx": i,
@@ -68,18 +74,20 @@ for e in entries:
 print(f"Total entries parsed: {len(entries)}")
 print(f"Unique pods (runs): {len(runs)}")
 for pod, elist in sorted(runs.items(), key=lambda x: -len(x[1])):
-    print(f"  {pod}: {len(elist)} entries, {elist[0]['ts_str'][:23]} → {elist[-1]['ts_str'][:23]}")
+    print(
+        f"  {pod}: {len(elist)} entries, {elist[0]['ts_str'][:23]} → {elist[-1]['ts_str'][:23]}"
+    )
 
 # --- Phase 2: Gap Detection ---
 
 all_gaps = []
 for pod, elist in runs.items():
     for i in range(len(elist) - 1):
-        delta = (elist[i+1]["ts"] - elist[i]["ts"]).total_seconds()
+        delta = (elist[i + 1]["ts"] - elist[i]["ts"]).total_seconds()
         all_gaps.append({
             "duration": delta,
             "before": elist[i],
-            "after": elist[i+1],
+            "after": elist[i + 1],
             "run_id": pod,
             "pos_i": i,
             "pos_total": len(elist),
@@ -98,13 +106,15 @@ threshold = max(mean_d + 2 * stdev_d, ABS_FLOOR)
 outlier_gaps = [g for g in all_gaps if g["duration"] > threshold]
 if len(outlier_gaps) < 3:
     threshold = max(mean_d + stdev_d, ABS_FLOOR)
-    print(f"[Adjustment] Fewer than 3 gaps at mean+2σ; lowered to mean+1σ = {threshold:.3f}s")
+    print(
+        f"[Adjustment] Fewer than 3 gaps at mean+2σ; lowered to mean+1σ = {threshold:.3f}s"
+    )
 
 outlier_gaps = [g for g in all_gaps if g["duration"] > threshold]
 outlier_gaps.sort(key=lambda g: -g["duration"])
 top_gaps = outlier_gaps[:TOP_N]
 
-print(f"\nGap statistics:")
+print("\nGap statistics:")
 print(f"  Mean delta: {mean_d:.3f}s")
 print(f"  Stdev: {stdev_d:.3f}s")
 print(f"  Threshold: {threshold:.3f}s")
@@ -112,12 +122,14 @@ print(f"  Gaps above threshold: {len(outlier_gaps)}")
 
 # --- Phase 3: Context Window Extraction ---
 
+
 def get_context(run_entries, gap):
     """Get 5 lines before and after the gap position."""
     pos = gap["pos_i"]
-    before = run_entries[max(0, pos - CONTEXT_LINES + 1):pos + 1]
-    after = run_entries[pos + 1:pos + 1 + CONTEXT_LINES]
+    before = run_entries[max(0, pos - CONTEXT_LINES + 1) : pos + 1]
+    after = run_entries[pos + 1 : pos + 1 + CONTEXT_LINES]
     return before, after
+
 
 # Attach context to each gap
 for g in top_gaps:
@@ -126,16 +138,25 @@ for g in top_gaps:
 
 # --- Phase 4: Pattern Frequency Analysis ---
 
-CMD_RE = re.compile(r'\b(kubectl|cp|mv|tar|gzip|git|pip|npm|go|python|java|sh|bash|curl|wget)\b\s+\S+')
-EXT_RE = re.compile(r'\.\b(py|go|jar|tar|zip|yaml|json|pb|bin|c|h|cpp|js|ts|tsx|md|sql|csv|parquet|proto)\b')
+CMD_RE = re.compile(
+    r"\b(kubectl|cp|mv|tar|gzip|git|pip|npm|go|python|java|sh|bash|curl|wget)\b\s+\S+"
+)
+EXT_RE = re.compile(
+    r"\.\b(py|go|jar|tar|zip|yaml|json|pb|bin|c|h|cpp|js|ts|tsx|md|sql|csv|parquet|proto)\b"
+)
+
 
 def extract_tokens(text):
     tokens = []
     for m in CMD_RE.finditer(text):
-        tokens.append(("command", m.group().split()[0] + " " + m.group().split()[1][:30]))
+        tokens.append((
+            "command",
+            m.group().split()[0] + " " + m.group().split()[1][:30],
+        ))
     for m in EXT_RE.finditer(text):
         tokens.append(("filetype", "." + m.group(1)))
     return tokens
+
 
 token_stats = defaultdict(lambda: {"total": 0, "pre": 0, "post": 0, "gaps": set()})
 
@@ -172,9 +193,9 @@ scored_tokens.sort(key=lambda t: -t["gap_correlation"])
 
 # --- Phase 5: Output ---
 
-print("\n" + "="*80)
+print("\n" + "=" * 80)
 print("# GCP kubectl Log Gap Analysis Report")
-print("="*80)
+print("=" * 80)
 
 # 5.1 Run Summary
 earliest = entries[0]["ts"].strftime("%Y-%m-%dT%H:%M:%S.%fZ")
@@ -197,30 +218,40 @@ print("|------|----------|--------------------|-------------------|--------|")
 for i, g in enumerate(top_gaps):
     dur = g["duration"]
     if dur >= 60:
-        dur_str = f"{int(dur//60)}m {dur%60:.0f}s"
+        dur_str = f"{int(dur // 60)}m {dur % 60:.0f}s"
     else:
         dur_str = f"{dur:.3f}s"
     before_msg = g["before"]["payload"][:60].replace("|", "\\|")
     after_msg = g["after"]["payload"][:60].replace("|", "\\|")
     pod_short = g["run_id"][:40]
-    print(f"| {i+1} | {dur_str} | {before_msg} | {after_msg} | {pod_short} |")
+    print(f"| {i + 1} | {dur_str} | {before_msg} | {after_msg} | {pod_short} |")
 
 # 5.3 Pattern Frequency Table
 print("\n## 5.3 Pattern Frequency Table\n")
-print("| Token | Type | Gap Correlation | Pre-Gap Weight | Post-Gap Weight | Appearances |")
-print("|-------|------|----------------|----------------|-----------------|-------------|")
+print(
+    "| Token | Type | Gap Correlation | Pre-Gap Weight | Post-Gap Weight | Appearances |"
+)
+print(
+    "|-------|------|----------------|----------------|-----------------|-------------|"
+)
 for t in scored_tokens[:20]:
-    print(f"| {t['token']} | {t['type']} | {t['gap_correlation']:.2f} | {t['pre_gap_weight']:.2f} | {t['post_gap_weight']:.2f} | {t['appearances']} |")
+    print(
+        f"| {t['token']} | {t['type']} | {t['gap_correlation']:.2f} | {t['pre_gap_weight']:.2f} | {t['post_gap_weight']:.2f} | {t['appearances']} |"
+    )
 
 # 5.4 Optimization Hypotheses
 print("\n## 5.4 Optimization Hypotheses\n")
 hypo_count = 0
 for t in scored_tokens:
     if t["gap_correlation"] >= 0.3:
-        pos = "pre" if t["pre_gap_weight"] > 0.6 else ("post" if t["post_gap_weight"] > 0.6 else "both")
+        pos = (
+            "pre"
+            if t["pre_gap_weight"] > 0.6
+            else ("post" if t["post_gap_weight"] > 0.6 else "both")
+        )
         print(f"""```
-Token: {t['token']}
-Correlation: {t['gap_correlation']:.2f}
+Token: {t["token"]}
+Correlation: {t["gap_correlation"]:.2f}
 Position: {pos}
 ```
 """)
@@ -235,18 +266,18 @@ print("<summary>Click to expand full context windows</summary>\n")
 for i, g in enumerate(top_gaps):
     dur = g["duration"]
     if dur >= 60:
-        dur_str = f"{int(dur//60)}m {dur%60:.0f}s"
+        dur_str = f"{int(dur // 60)}m {dur % 60:.0f}s"
     else:
         dur_str = f"{dur:.3f}s"
-    print(f"### Gap #{i+1} — {dur_str}")
-    print(f"```")
-    print(f"Gap #{i+1}")
+    print(f"### Gap #{i + 1} — {dur_str}")
+    print("```")
+    print(f"Gap #{i + 1}")
     print(f"  Duration:     {dur_str}")
-    print(f"  Start:        {g['before']['ts_str']} — \"{g['before']['payload'][:100]}\"")
-    print(f"  End:          {g['after']['ts_str']} — \"{g['after']['payload'][:100]}\"")
+    print(f'  Start:        {g["before"]["ts_str"]} — "{g["before"]["payload"][:100]}"')
+    print(f'  End:          {g["after"]["ts_str"]} — "{g["after"]["payload"][:100]}"')
     print(f"  Run ID:       {g['run_id']}")
-    print(f"  Position:     entry {g['pos_i']} → {g['pos_i']+1} of {g['pos_total']}")
-    print(f"```")
+    print(f"  Position:     entry {g['pos_i']} → {g['pos_i'] + 1} of {g['pos_total']}")
+    print("```")
     print(f"\n**Before ({len(g['ctx_before'])} lines):**")
     print("```")
     for e in g["ctx_before"]:

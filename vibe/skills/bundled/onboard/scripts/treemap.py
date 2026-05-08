@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""
-Tree-sitter codebase mapper and code smell detector.
+"""Tree-sitter codebase mapper and code smell detector.
 
 Walks the current working directory, parses source files with tree-sitter,
 and emits a structural map + prioritized code smell report.
@@ -11,15 +10,17 @@ Requires: pip install tree-sitter tree-sitter-python tree-sitter-javascript
            tree-sitter-kotlin tree-sitter-php
 """
 
+from __future__ import annotations
+
 import argparse
+from collections import defaultdict
+from dataclasses import dataclass, field
 import difflib
 import os
+from pathlib import Path
 import subprocess
 import sys
 import warnings
-from collections import defaultdict
-from dataclasses import dataclass, field
-from pathlib import Path
 
 from tree_sitter import Language, Parser
 
@@ -79,13 +80,41 @@ def get_parser(lang: str) -> Parser | None:
 # ---------------------------------------------------------------------------
 
 DEFAULT_IGNORE_DIRS = {
-    ".git", "node_modules", "__pycache__", "venv", ".venv", "env",
-    "dist", "build", ".tox", ".mypy_cache", ".pytest_cache", ".ruff_cache",
-    ".next", ".nuxt", "target", "out", ".eggs", "*.egg-info",
-    ".claude", ".idea", ".vscode", "coverage", "htmlcov",
-    ".cache", ".parcel-cache", ".turbo", ".vercel", ".output",
-    "vendor", "bower_components", ".gradle", ".mvn",
-    "_build", "site-packages", ".bundle",
+    ".git",
+    "node_modules",
+    "__pycache__",
+    "venv",
+    ".venv",
+    "env",
+    "dist",
+    "build",
+    ".tox",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".next",
+    ".nuxt",
+    "target",
+    "out",
+    ".eggs",
+    "*.egg-info",
+    ".claude",
+    ".idea",
+    ".vscode",
+    "coverage",
+    "htmlcov",
+    ".cache",
+    ".parcel-cache",
+    ".turbo",
+    ".vercel",
+    ".output",
+    "vendor",
+    "bower_components",
+    ".gradle",
+    ".mvn",
+    "_build",
+    "site-packages",
+    ".bundle",
 }
 
 EXT_TO_LANG = {
@@ -113,6 +142,7 @@ EXT_TO_LANG = {
 @dataclass
 class MapperConfig:
     """Configuration for codebase mapping thresholds and behavior."""
+
     long_func_lines: int = 50
     god_class_methods: int = 15
     deep_nesting_levels: int = 4
@@ -204,6 +234,7 @@ LANG_NODE_TYPES = {
 @dataclass
 class FileContext:
     """Per-file mutable state during AST traversal."""
+
     rel_path: str
     lang: str
     node_types: dict
@@ -238,8 +269,11 @@ def get_node_name(node) -> str | None:
     """Extract the name from a tree-sitter node."""
     for child in node.children:
         if child.type in (
-            "identifier", "name", "type_identifier",
-            "property_identifier", "simple_identifier",
+            "identifier",
+            "name",
+            "type_identifier",
+            "property_identifier",
+            "simple_identifier",
         ):
             return child.text.decode("utf-8")
         if child.type == "dotted_name":
@@ -252,14 +286,21 @@ def get_function_params(node, lang: str) -> list[str]:
     params = []
     for child in node.children:
         if child.type in (
-            "parameters", "formal_parameters", "parameter_list",
+            "parameters",
+            "formal_parameters",
+            "parameter_list",
             "function_value_parameters",
         ):
             for param in child.children:
                 if param.type in (
-                    "identifier", "typed_parameter", "typed_default_parameter",
-                    "default_parameter", "required_parameter", "optional_parameter",
-                    "formal_parameter", "parameter",
+                    "identifier",
+                    "typed_parameter",
+                    "typed_default_parameter",
+                    "default_parameter",
+                    "required_parameter",
+                    "optional_parameter",
+                    "formal_parameter",
+                    "parameter",
                 ):
                     name = get_node_name(param)
                     if name and name not in ("self", "cls"):
@@ -274,10 +315,17 @@ def get_function_params(node, lang: str) -> list[str]:
 def count_nesting_depth(node, current_depth: int = 0) -> int:
     """Find the maximum nesting depth of control flow in a node."""
     nesting_types = {
-        "if_statement", "for_statement", "while_statement", "try_statement",
-        "with_statement", "for_in_statement", "if_expression",
-        "match_statement", "case_clause",
-        "switch_statement", "for_of_statement",
+        "if_statement",
+        "for_statement",
+        "while_statement",
+        "try_statement",
+        "with_statement",
+        "for_in_statement",
+        "if_expression",
+        "match_statement",
+        "case_clause",
+        "switch_statement",
+        "for_of_statement",
     }
     max_depth = current_depth
     for child in node.children:
@@ -370,11 +418,19 @@ class ClassVisitor(NodeVisitor):
         # Count methods for god class detection
         method_count = 0
         for child in node.children:
-            if child.type in ("block", "class_body", "declaration_list", "field_declaration_list"):
+            if child.type in (
+                "block",
+                "class_body",
+                "declaration_list",
+                "field_declaration_list",
+            ):
                 for member in child.children:
                     if member.type in (
-                        "function_definition", "method_definition",
-                        "method_declaration", "function_item", "function_declaration",
+                        "function_definition",
+                        "method_definition",
+                        "method_declaration",
+                        "function_item",
+                        "function_declaration",
                     ):
                         method_count += 1
         if method_count > self.config.god_class_methods:
@@ -387,9 +443,11 @@ class ClassVisitor(NodeVisitor):
             })
 
         # Missing docstring (Python) — skip test files
-        if (ctx.lang == "python"
-                and not has_docstring(node)
-                and not ctx.rel_path.startswith("tests/")):
+        if (
+            ctx.lang == "python"
+            and not has_docstring(node)
+            and not ctx.rel_path.startswith("tests/")
+        ):
             ctx.smells.append({
                 "type": "MISSING_DOCSTRING",
                 "severity": "low",
@@ -445,10 +503,13 @@ class FunctionVisitor(NodeVisitor):
             })
 
         # Missing docstring (Python) — skip test files and private/test functions
-        if (ctx.lang == "python" and not has_docstring(node)
-                and not name.startswith("_")
-                and not name.startswith("test_")
-                and not ctx.rel_path.startswith("tests/")):
+        if (
+            ctx.lang == "python"
+            and not has_docstring(node)
+            and not name.startswith("_")
+            and not name.startswith("test_")
+            and not ctx.rel_path.startswith("tests/")
+        ):
             ctx.smells.append({
                 "type": "MISSING_DOCSTRING",
                 "severity": "low",
@@ -508,7 +569,9 @@ class CatchAllVisitor(NodeVisitor):
                 "severity": "high",
                 "file": ctx.rel_path,
                 "line": node.start_point[0] + 1,
-                "detail": node.text.decode("utf-8", errors="replace").split("\n")[0].strip(),
+                "detail": node.text.decode("utf-8", errors="replace")
+                .split("\n")[0]
+                .strip(),
             })
 
 
@@ -517,15 +580,20 @@ class DeadCodeVisitor(NodeVisitor):
 
     BLOCK_TYPES = {"block", "statement_block", "compound_statement"}
     TERMINAL_TYPES = {
-        "return_statement", "raise_statement", "break_statement",
-        "continue_statement", "throw_statement",
+        "return_statement",
+        "raise_statement",
+        "break_statement",
+        "continue_statement",
+        "throw_statement",
     }
     SKIP_TYPES = {"comment", "newline", "NEWLINE", "INDENT", "DEDENT"}
 
     def visit(self, node, ctx: FileContext) -> None:
         if node.type not in self.BLOCK_TYPES:
             return
-        children = [c for c in node.children if c.is_named and c.type not in self.SKIP_TYPES]
+        children = [
+            c for c in node.children if c.is_named and c.type not in self.SKIP_TYPES
+        ]
         found_terminal = False
         terminal_type = ""
         for child in children:
@@ -579,8 +647,7 @@ class CodebaseMapper:
                 continue
             # Prune ignored dirs from traversal
             dirnames[:] = [
-                d for d in dirnames
-                if not should_ignore(rel_dir / d, self._ignore_dirs)
+                d for d in dirnames if not should_ignore(rel_dir / d, self._ignore_dirs)
             ]
             for fname in sorted(filenames):
                 fpath = Path(dirpath) / fname
@@ -623,10 +690,7 @@ class CodebaseMapper:
 
         node_types = LANG_NODE_TYPES.get(lang, {})
         ctx = FileContext(
-            rel_path=rel_path,
-            lang=lang,
-            node_types=node_types,
-            source_text=source_text,
+            rel_path=rel_path, lang=lang, node_types=node_types, source_text=source_text
         )
 
         self._walk_tree(tree.root_node, ctx)
@@ -636,8 +700,7 @@ class CodebaseMapper:
 
         # Collect function bodies for duplicate detection
         self._function_bodies.extend(
-            (rel_path, name, line, src)
-            for name, line, src in ctx.function_bodies
+            (rel_path, name, line, src) for name, line, src in ctx.function_bodies
         )
 
         # Build import graph (Python-specific)
@@ -770,7 +833,7 @@ class CodebaseMapper:
             return []
         if parts[0] == "from" and "import" in parts:
             idx = parts.index("import")
-            rest = " ".join(parts[idx + 1:])
+            rest = " ".join(parts[idx + 1 :])
             rest = rest.strip("()")
             names = []
             for item in rest.split(","):
@@ -800,7 +863,7 @@ class CodebaseMapper:
         large codebases (O(n²) SequenceMatcher is expensive).
         """
         MAX_FUNCTIONS = 2000  # Skip duplicate detection if too many functions
-        MAX_DUPLICATES = 50   # Stop after finding this many duplicates
+        MAX_DUPLICATES = 50  # Stop after finding this many duplicates
 
         if len(self._function_bodies) < 2:
             return
@@ -817,7 +880,11 @@ class CodebaseMapper:
             lines = []
             for line in source.splitlines():
                 stripped = line.strip()
-                if stripped and not stripped.startswith("#") and not stripped.startswith("//"):
+                if (
+                    stripped
+                    and not stripped.startswith("#")
+                    and not stripped.startswith("//")
+                ):
                     lines.append(stripped)
             return "\n".join(lines)
 
@@ -856,8 +923,7 @@ class CodebaseMapper:
         """Format the structural map and smell report."""
         # Filter out skipped smells
         active_smells = [
-            s for s in self.smells
-            if s["type"] not in self.config.skip_smells
+            s for s in self.smells if s["type"] not in self.config.skip_smells
         ]
 
         lines = []
@@ -887,7 +953,9 @@ class CodebaseMapper:
         lines.append(f"- **Files parsed**: {self.files_parsed}")
         lines.append(f"- **Languages**: {lang_breakdown}")
         lines.append(f"- **Total lines**: {total_lines:,}")
-        lines.append(f"- **Classes**: {total_classes} | **Functions**: {total_functions}")
+        lines.append(
+            f"- **Classes**: {total_classes} | **Functions**: {total_functions}"
+        )
         smell_summary = (
             f"{severity_counts.get('high', 0)} high, "
             f"{severity_counts.get('medium', 0)} medium, "
@@ -908,7 +976,9 @@ class CodebaseMapper:
             lines.append(f"## {dir_name}/\n")
             for rel_path in by_dir[dir_name]:
                 info = self.file_data[rel_path]
-                lines.append(f"**{rel_path}** ({info['lang']}, {info['line_count']} lines)")
+                lines.append(
+                    f"**{rel_path}** ({info['lang']}, {info['line_count']} lines)"
+                )
 
                 if info["classes"]:
                     lines.append(f"  - classes: {', '.join(info['classes'])}")
@@ -919,7 +989,9 @@ class CodebaseMapper:
                 if info["functions"]:
                     funcs = info["functions"]
                     if len(funcs) > 20:
-                        display = ", ".join(funcs[:20]) + f" ... (+{len(funcs) - 20} more)"
+                        display = (
+                            ", ".join(funcs[:20]) + f" ... (+{len(funcs) - 20} more)"
+                        )
                     else:
                         display = ", ".join(funcs)
                     lines.append(f"  - functions: {display}")
@@ -928,11 +1000,18 @@ class CodebaseMapper:
                     for imp in info["imports"]:
                         parts = imp.split()
                         if len(parts) >= 2:
-                            mod = parts[1] if parts[0] in ("import", "from", "#include") else parts[0]
+                            mod = (
+                                parts[1]
+                                if parts[0] in ("import", "from", "#include")
+                                else parts[0]
+                            )
                             imp_names.append(mod.rstrip(","))
                     unique_imports = list(dict.fromkeys(imp_names))
                     if len(unique_imports) > 15:
-                        display = ", ".join(unique_imports[:15]) + f" ... (+{len(unique_imports) - 15} more)"
+                        display = (
+                            ", ".join(unique_imports[:15])
+                            + f" ... (+{len(unique_imports) - 15} more)"
+                        )
                     else:
                         display = ", ".join(unique_imports)
                     lines.append(f"  - imports: {display}")
@@ -973,7 +1052,9 @@ class CodebaseMapper:
                             loc += f":{s['line']}"
                         lines.append(f"- [{s['type']}] {loc} — {s['detail']}")
                     if len(type_items) > MAX_PER_TYPE:
-                        lines.append(f"  ... and {len(type_items) - MAX_PER_TYPE} more {smell_type} issues")
+                        lines.append(
+                            f"  ... and {len(type_items) - MAX_PER_TYPE} more {smell_type} issues"
+                        )
                 lines.append("")
         else:
             lines.append("\n# Code Smells (0 issues found)\n")
@@ -986,12 +1067,15 @@ class CodebaseMapper:
 # Entry point
 # ---------------------------------------------------------------------------
 
+
 def get_git_head() -> str | None:
     """Get the current HEAD commit hash and subject."""
     try:
         result = subprocess.run(
             ["git", "log", "--format=%H %s", "-1"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         if result.returncode == 0 and result.stdout.strip():
             return result.stdout.strip()
@@ -1002,34 +1086,55 @@ def get_git_head() -> str | None:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Tree-sitter codebase mapper and code smell detector.",
+        description="Tree-sitter codebase mapper and code smell detector."
     )
     parser.add_argument(
-        "--long-func", type=int, default=50, metavar="N",
+        "--long-func",
+        type=int,
+        default=50,
+        metavar="N",
         help="lines threshold for LONG_FUNCTION smell (default: 50)",
     )
     parser.add_argument(
-        "--god-class", type=int, default=15, metavar="N",
+        "--god-class",
+        type=int,
+        default=15,
+        metavar="N",
         help="methods threshold for GOD_CLASS smell (default: 15)",
     )
     parser.add_argument(
-        "--deep-nesting", type=int, default=4, metavar="N",
+        "--deep-nesting",
+        type=int,
+        default=4,
+        metavar="N",
         help="nesting threshold for DEEP_NESTING smell (default: 4)",
     )
     parser.add_argument(
-        "--many-params", type=int, default=5, metavar="N",
+        "--many-params",
+        type=int,
+        default=5,
+        metavar="N",
         help="parameters threshold for MANY_PARAMS smell (default: 5)",
     )
     parser.add_argument(
-        "--large-file", type=int, default=500, metavar="N",
+        "--large-file",
+        type=int,
+        default=500,
+        metavar="N",
         help="lines threshold for LARGE_FILE smell (default: 500)",
     )
     parser.add_argument(
-        "--skip-smells", type=str, default="", metavar="TYPE,TYPE",
+        "--skip-smells",
+        type=str,
+        default="",
+        metavar="TYPE,TYPE",
         help="comma-separated smell types to skip (e.g. MISSING_DOCSTRING,LARGE_FILE)",
     )
     parser.add_argument(
-        "--skip-dirs", type=str, default="", metavar="dir,dir",
+        "--skip-dirs",
+        type=str,
+        default="",
+        metavar="dir,dir",
         help="additional directories to ignore (e.g. generated,vendor)",
     )
 

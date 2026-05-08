@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""
-Agent Action Plan (AAP) parser using tree-sitter-markdown.
+"""Agent Action Plan (AAP) parser using tree-sitter-markdown.
 
 Parses AAP documents — large structured markdown files with numbered heading
 hierarchies (# 0. / ## 0.X / ### 0.X.Y), markdown tables, mermaid diagrams,
@@ -9,12 +8,14 @@ and code blocks — and extracts structural data for review.
 Requires: pip install tree-sitter tree-sitter-markdown
 """
 
+from __future__ import annotations
+
 import argparse
+from dataclasses import dataclass, field
+from pathlib import Path
 import re
 import sys
 import warnings
-from dataclasses import dataclass, field
-from pathlib import Path
 
 from tree_sitter import Language, Parser
 
@@ -31,9 +32,7 @@ _PARSERS: dict[str, Parser] = {}
 
 def _load_languages():
     """Load the tree-sitter-markdown language."""
-    loaders = {
-        "markdown": ("tree_sitter_markdown", "language"),
-    }
+    loaders = {"markdown": ("tree_sitter_markdown", "language")}
     for lang_name, (module_name, func_name) in loaders.items():
         try:
             mod = __import__(module_name)
@@ -62,9 +61,11 @@ def get_parser(lang: str) -> Parser | None:
 # Configuration
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class AAPConfig:
     """Configuration for AAP parsing and LoC estimation."""
+
     file_path: str = ""
     loc_create: int = 150
     loc_modify: int = 50
@@ -76,19 +77,22 @@ class AAPConfig:
 # Data classes
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class HeadingNode:
     """A section heading in the AAP hierarchy."""
+
     level: int
     number: str  # e.g. "0.2.1"
     title: str
     line: int
-    children: list["HeadingNode"] = field(default_factory=list)
+    children: list[HeadingNode] = field(default_factory=list)
 
 
 @dataclass
 class FileEntry:
     """A file from the repository scope tables."""
+
     path: str
     action: str  # CREATE or MODIFY
     purpose: str
@@ -100,6 +104,7 @@ class FileEntry:
 @dataclass
 class DependencyEntry:
     """A dependency from the dependency inventory tables."""
+
     registry: str
     package: str
     version: str
@@ -109,6 +114,7 @@ class DependencyEntry:
 @dataclass
 class RuleEntry:
     """A rule extracted from section 0.7."""
+
     section_number: str
     title: str
     constraints: list[str] = field(default_factory=list)
@@ -117,6 +123,7 @@ class RuleEntry:
 @dataclass
 class ScopeItem:
     """An in-scope or out-of-scope item from section 0.6."""
+
     description: str
     in_scope: bool = True
 
@@ -124,12 +131,15 @@ class ScopeItem:
 @dataclass
 class AAPDocument:
     """Aggregated data extracted from an AAP document."""
+
     headings: list[HeadingNode] = field(default_factory=list)
     files: list[FileEntry] = field(default_factory=list)
     dependencies: list[DependencyEntry] = field(default_factory=list)
     rules: list[RuleEntry] = field(default_factory=list)
     scope_items: list[ScopeItem] = field(default_factory=list)
-    source_line_map: dict[str, int] = field(default_factory=dict)  # source file → line count
+    source_line_map: dict[str, int] = field(
+        default_factory=dict
+    )  # source file → line count
     mermaid_diagrams: int = 0
     code_blocks: int = 0
     total_lines: int = 0
@@ -158,6 +168,7 @@ class AAPDocument:
 # ---------------------------------------------------------------------------
 # Node Visitors
 # ---------------------------------------------------------------------------
+
 
 class NodeVisitor:
     """Base class for markdown AST node visitors."""
@@ -199,10 +210,7 @@ class HeadingVisitor(NodeVisitor):
             title = title_text
 
         heading = HeadingNode(
-            level=level,
-            number=number,
-            title=title,
-            line=node.start_point[0] + 1,
+            level=level, number=number, title=title, line=node.start_point[0] + 1
         )
         doc.headings.append(heading)
 
@@ -263,8 +271,16 @@ class TableVisitor(NodeVisitor):
         """Infer CREATE/MODIFY/REFERENCE/DELETE from section heading text."""
         lower = section_title.lower()
         # Keywords suggesting modification of existing files
-        modify_kw = ("modify", "modif", "existing", "requiring modification", "touchpoint",
-                      "updates", "update", "integration point")
+        modify_kw = (
+            "modify",
+            "modif",
+            "existing",
+            "requiring modification",
+            "touchpoint",
+            "updates",
+            "update",
+            "integration point",
+        )
         # Keywords suggesting new file creation
         create_kw = ("new", "create", "new file", "requirements")
         # Keywords suggesting reference-only
@@ -360,29 +376,52 @@ class TableVisitor(NodeVisitor):
                 action = self._ACTION_MAP.get(raw_action, raw_action)
             else:
                 action = inferred_action
-            purpose = cells[purpose_idx].strip() if purpose_idx >= 0 and len(cells) > purpose_idx else ""
-            source_file = cells[source_file_idx].strip() if source_file_idx >= 0 and len(cells) > source_file_idx else ""
+            purpose = (
+                cells[purpose_idx].strip()
+                if purpose_idx >= 0 and len(cells) > purpose_idx
+                else ""
+            )
+            source_file = (
+                cells[source_file_idx].strip()
+                if source_file_idx >= 0 and len(cells) > source_file_idx
+                else ""
+            )
 
             # Extract source line count from any cell that mentions lines
-            src_lines = self._extract_line_count(cells, file_idx, source_file_idx, key_changes_idx)
+            src_lines = self._extract_line_count(
+                cells, file_idx, source_file_idx, key_changes_idx
+            )
 
-            if path and action in ("CREATE", "MODIFY", "AUTO-GENERATED", "REFERENCE", "DELETE"):
-                doc.files.append(FileEntry(
-                    path=path,
-                    action=action,
-                    purpose=purpose,
-                    source_section=section,
-                    source_file=source_file,
-                    source_lines=src_lines,
-                ))
+            if path and action in (
+                "CREATE",
+                "MODIFY",
+                "AUTO-GENERATED",
+                "REFERENCE",
+                "DELETE",
+            ):
+                doc.files.append(
+                    FileEntry(
+                        path=path,
+                        action=action,
+                        purpose=purpose,
+                        source_section=section,
+                        source_file=source_file,
+                        source_lines=src_lines,
+                    )
+                )
 
     # Regex to find line counts like "6,274 lines", "9,210 lines", "(5,323 lines)", "6274"
     _LINE_COUNT_RE = re.compile(r"([\d,]+)\s*lines?\b", re.IGNORECASE)
     # Fallback: bare number in parens like "(6,274)" when near a .c filename
     _BARE_COUNT_RE = re.compile(r"\((\d[\d,]*)\)")
 
-    def _extract_line_count(self, cells: list[str], file_idx: int,
-                            source_file_idx: int, key_changes_idx: int) -> int:
+    def _extract_line_count(
+        self,
+        cells: list[str],
+        file_idx: int,
+        source_file_idx: int,
+        key_changes_idx: int,
+    ) -> int:
         """Extract source line count from table cells.
 
         Scans source file column, key changes column, and all other columns
@@ -430,12 +469,18 @@ class TableVisitor(NodeVisitor):
             if len(cells) <= max(reg_idx, pkg_idx):
                 continue
 
-            doc.dependencies.append(DependencyEntry(
-                registry=cells[reg_idx].strip(),
-                package=cells[pkg_idx].strip(),
-                version=cells[ver_idx].strip() if ver_idx >= 0 and len(cells) > ver_idx else "",
-                purpose=cells[pur_idx].strip() if pur_idx >= 0 and len(cells) > pur_idx else "",
-            ))
+            doc.dependencies.append(
+                DependencyEntry(
+                    registry=cells[reg_idx].strip(),
+                    package=cells[pkg_idx].strip(),
+                    version=cells[ver_idx].strip()
+                    if ver_idx >= 0 and len(cells) > ver_idx
+                    else "",
+                    purpose=cells[pur_idx].strip()
+                    if pur_idx >= 0 and len(cells) > pur_idx
+                    else "",
+                )
+            )
 
     def _find_parent_section(self, node, source_lines: list[str]) -> str:
         """Walk backwards from node's line to find the nearest heading."""
@@ -519,11 +564,9 @@ class RuleVisitor(NodeVisitor):
                     constraints.append(stripped)
 
         if title:
-            doc.rules.append(RuleEntry(
-                section_number=number,
-                title=title,
-                constraints=constraints,
-            ))
+            doc.rules.append(
+                RuleEntry(section_number=number, title=title, constraints=constraints)
+            )
 
     def _get_section_heading(self, section_node) -> str:
         """Get the heading number from a section node."""
@@ -569,7 +612,9 @@ class SourceLineMapVisitor(NodeVisitor):
             filename = match.group(1)
             count = int(match.group(2).replace(",", ""))
             if count > 50:  # filter noise
-                doc.source_line_map[filename] = max(doc.source_line_map.get(filename, 0), count)
+                doc.source_line_map[filename] = max(
+                    doc.source_line_map.get(filename, 0), count
+                )
 
     def _extract_from_table(self, node, doc: AAPDocument) -> None:
         """Extract line counts from tables with a 'Lines' column."""
@@ -626,7 +671,9 @@ class SourceLineMapVisitor(NodeVisitor):
                 continue
 
             if count > 50:
-                doc.source_line_map[filename] = max(doc.source_line_map.get(filename, 0), count)
+                doc.source_line_map[filename] = max(
+                    doc.source_line_map.get(filename, 0), count
+                )
 
 
 class ScopeVisitor(NodeVisitor):
@@ -654,7 +701,11 @@ class ScopeVisitor(NodeVisitor):
             if child.type == "inline":
                 title_text = child.text.decode("utf-8").strip().lower()
 
-        is_in_scope = "in scope" in title_text or "in-scope" in title_text or title_text.endswith("in scope")
+        is_in_scope = (
+            "in scope" in title_text
+            or "in-scope" in title_text
+            or title_text.endswith("in scope")
+        )
         is_out_scope = "out of scope" in title_text or "out-of-scope" in title_text
 
         if not is_in_scope and not is_out_scope:
@@ -679,10 +730,9 @@ class ScopeVisitor(NodeVisitor):
             if line.startswith("- **") or line.startswith("- "):
                 desc = line.lstrip("- ").strip()
                 if desc:
-                    doc.scope_items.append(ScopeItem(
-                        description=desc,
-                        in_scope=is_in_scope,
-                    ))
+                    doc.scope_items.append(
+                        ScopeItem(description=desc, in_scope=is_in_scope)
+                    )
 
     def _get_section_heading(self, section_node) -> str:
         for child in section_node.children:
@@ -699,6 +749,7 @@ class ScopeVisitor(NodeVisitor):
 # ---------------------------------------------------------------------------
 # Parser
 # ---------------------------------------------------------------------------
+
 
 class AAPParser:
     """Parses an AAP document using tree-sitter-markdown."""
@@ -756,7 +807,18 @@ class AAPParser:
 
         _file_re = re.compile(r"([a-zA-Z_][\w.-]*\.[ch])")
         _dir_re = re.compile(r"([a-zA-Z_][\w.-]*/)")
-        _source_exts = (".rs", ".c", ".cpp", ".cc", ".h", ".py", ".go", ".java", ".ts", ".js")
+        _source_exts = (
+            ".rs",
+            ".c",
+            ".cpp",
+            ".cc",
+            ".h",
+            ".py",
+            ".go",
+            ".java",
+            ".ts",
+            ".js",
+        )
 
         # Pass 1: Map each eligible file to its referenced source entries (files or dirs)
         file_to_sources: dict[int, set[str]] = {}  # index → set of source keys
@@ -839,7 +901,9 @@ class AAPParser:
                 nm = number_re.match(text)
                 number = nm.group(1).rstrip(".") if nm else ""
                 title = nm.group(2).strip() if nm else text
-                doc.headings.append(HeadingNode(level=level, number=number, title=title, line=i + 1))
+                doc.headings.append(
+                    HeadingNode(level=level, number=number, title=title, line=i + 1)
+                )
 
             if line.strip().startswith("```mermaid"):
                 doc.mermaid_diagrams += 1
@@ -847,12 +911,20 @@ class AAPParser:
                 doc.code_blocks += 1
 
         # Simple table extraction for file tables (with explicit action/transformation column)
-        table_re = re.compile(r"^\|\s*`?([^|`]+?)`?\s*\|\s*(CREATE|MODIFY|UPDATE|REFERENCE|DELETE)\s*\|\s*(.+?)\s*\|")
+        table_re = re.compile(
+            r"^\|\s*`?([^|`]+?)`?\s*\|\s*(CREATE|MODIFY|UPDATE|REFERENCE|DELETE)\s*\|\s*(.+?)\s*\|"
+        )
         for line in source_lines:
             m = table_re.match(line)
             if m:
                 action = {"UPDATE": "MODIFY"}.get(m.group(2), m.group(2))
-                doc.files.append(FileEntry(path=m.group(1).strip(), action=action, purpose=m.group(3).strip()))
+                doc.files.append(
+                    FileEntry(
+                        path=m.group(1).strip(),
+                        action=action,
+                        purpose=m.group(3).strip(),
+                    )
+                )
 
         self._build_hierarchy(doc)
         return doc
@@ -862,7 +934,7 @@ class AAPParser:
         lines = []
 
         # --- Summary ---
-        lines.append(f"# AAP Analysis Summary")
+        lines.append("# AAP Analysis Summary")
         lines.append("")
         lines.append(f"- **Total lines**: {doc.total_lines:,}")
         lines.append(f"- **Major sections**: {doc.major_sections}")
@@ -872,10 +944,14 @@ class AAPParser:
             file_parts.append(f"{doc.reference_count} REFERENCE")
         if doc.delete_count:
             file_parts.append(f"{doc.delete_count} DELETE")
-        lines.append(f"- **Files referenced**: {len(doc.files)} ({', '.join(file_parts)})")
+        lines.append(
+            f"- **Files referenced**: {len(doc.files)} ({', '.join(file_parts)})"
+        )
         lines.append(f"- **Dependencies**: {len(doc.dependencies)}")
         lines.append(f"- **Rules**: {len(doc.rules)}")
-        lines.append(f"- **Scope items**: {len(doc.scope_items)} ({sum(1 for s in doc.scope_items if s.in_scope)} in-scope, {sum(1 for s in doc.scope_items if not s.in_scope)} out-of-scope)")
+        lines.append(
+            f"- **Scope items**: {len(doc.scope_items)} ({sum(1 for s in doc.scope_items if s.in_scope)} in-scope, {sum(1 for s in doc.scope_items if not s.in_scope)} out-of-scope)"
+        )
         lines.append(f"- **Mermaid diagrams**: {doc.mermaid_diagrams}")
         lines.append(f"- **Code blocks**: {doc.code_blocks}")
         lines.append("")
@@ -905,7 +981,9 @@ class AAPParser:
             lines.append("| Registry | Package | Version | Purpose |")
             lines.append("|----------|---------|---------|---------|")
             for d in doc.dependencies:
-                lines.append(f"| {d.registry} | {d.package} | {d.version} | {d.purpose} |")
+                lines.append(
+                    f"| {d.registry} | {d.package} | {d.version} | {d.purpose} |"
+                )
             lines.append("")
 
         # --- Rules ---
@@ -950,16 +1028,24 @@ class AAPParser:
             modify_loc = sum(loc for f, loc in file_locs if f.action == "MODIFY")
 
             # Count how many files had source line data vs heuristic
-            source_informed = sum(1 for f in doc.files if f.source_lines > 0 and f.action == "CREATE")
+            source_informed = sum(
+                1 for f in doc.files if f.source_lines > 0 and f.action == "CREATE"
+            )
             heuristic_only = doc.create_count - source_informed
-            total_source_lines = sum(f.source_lines for f in doc.files if f.source_lines > 0)
+            total_source_lines = sum(
+                f.source_lines for f in doc.files if f.source_lines > 0
+            )
 
             method_parts = []
             if source_informed:
-                method_parts.append(f"{source_informed} files estimated from source line counts "
-                                    f"({total_source_lines:,} source lines × {self._RUST_EXPANSION_RATIO}x ratio)")
+                method_parts.append(
+                    f"{source_informed} files estimated from source line counts "
+                    f"({total_source_lines:,} source lines × {self._RUST_EXPANSION_RATIO}x ratio)"
+                )
             if heuristic_only:
-                method_parts.append(f"{heuristic_only} files estimated via extension heuristics")
+                method_parts.append(
+                    f"{heuristic_only} files estimated via extension heuristics"
+                )
             method_parts.append(f"MODIFY baseline: {self.config.loc_modify} LoC")
             lines.append("Estimation method: " + "; ".join(method_parts))
             lines.append("")
@@ -1010,7 +1096,9 @@ class AAPParser:
 
         return "\n".join(lines)
 
-    def _format_heading_tree(self, heading: HeadingNode, lines: list[str], indent: int) -> None:
+    def _format_heading_tree(
+        self, heading: HeadingNode, lines: list[str], indent: int
+    ) -> None:
         """Format a heading and its children as an indented tree."""
         prefix = "  " * indent
         num_str = f"[{heading.number}] " if heading.number else ""
@@ -1118,59 +1206,50 @@ class AAPParser:
         # Ordered rules — first match wins
         rules: list[tuple[str, list[str]]] = [
             # Tests (check before source so test/ under python/ matches here)
-            ("Tests", [
-                "python/test/", "test/", "tests/", "spec/",
-            ]),
+            ("Tests", ["python/test/", "test/", "tests/", "spec/"]),
             # C++ MLIR dialect IR (TableGen defs + implementations)
-            ("C++ Dialect IR", [
-                "include/triton/Dialect/", "lib/Dialect/",
-            ]),
+            ("C++ Dialect IR", ["include/triton/Dialect/", "lib/Dialect/"]),
             # C++ conversion passes
-            ("C++ Conversion", [
-                "include/triton/Conversion/", "lib/Conversion/",
-            ]),
+            ("C++ Conversion", ["include/triton/Conversion/", "lib/Conversion/"]),
             # C++ analysis / target / tools
-            ("C++ Infrastructure", [
-                "lib/Analysis/", "lib/Target/", "lib/Tools/",
-                "include/triton/Analysis/", "include/triton/Target/",
-            ]),
+            (
+                "C++ Infrastructure",
+                [
+                    "lib/Analysis/",
+                    "lib/Target/",
+                    "lib/Tools/",
+                    "include/triton/Analysis/",
+                    "include/triton/Target/",
+                ],
+            ),
             # PyBind11 bridge
-            ("Python Bindings (pybind11)", [
-                "python/src/",
-            ]),
+            ("Python Bindings (pybind11)", ["python/src/"]),
             # Python package source
-            ("Python Source", [
-                "python/triton/", "python/",
-            ]),
+            ("Python Source", ["python/triton/", "python/"]),
             # Backend / third-party
-            ("Backends", [
-                "third_party/",
-            ]),
+            ("Backends", ["third_party/"]),
             # CLI / binary tools
-            ("CLI / Tools", [
-                "bin/",
-            ]),
+            ("CLI / Tools", ["bin/"]),
             # Rust layout (crate directories and src/)
-            ("Rust Source", [
-                "exim-", "openssl-", "src/main.rs", "src/lib.rs", "src/",
-            ]),
+            ("Rust Source", ["exim-", "openssl-", "src/main.rs", "src/lib.rs", "src/"]),
             # Build system
-            ("Build System", [
-                "CMakeLists.txt", "setup.py", "pyproject.toml",
-                "Cargo.toml", "Makefile", ".cmake",
-            ]),
+            (
+                "Build System",
+                [
+                    "CMakeLists.txt",
+                    "setup.py",
+                    "pyproject.toml",
+                    "Cargo.toml",
+                    "Makefile",
+                    ".cmake",
+                ],
+            ),
             # CI/CD
-            ("CI/CD", [
-                ".github/", ".gitlab-ci", "Jenkinsfile",
-            ]),
+            ("CI/CD", [".github/", ".gitlab-ci", "Jenkinsfile"]),
             # Benchmarking
-            ("Benchmarking", [
-                "bench/",
-            ]),
+            ("Benchmarking", ["bench/"]),
             # Documentation
-            ("Documentation", [
-                "docs/", "doc/", "README", "CHANGELOG",
-            ]),
+            ("Documentation", ["docs/", "doc/", "README", "CHANGELOG"]),
         ]
 
         layers: dict[str, list[FileEntry]] = {}
@@ -1194,28 +1273,34 @@ class AAPParser:
 # Entry point
 # ---------------------------------------------------------------------------
 
+
 def main():
     parser = argparse.ArgumentParser(
-        description="Parse and analyze Agent Action Plan (AAP) documents.",
+        description="Parse and analyze Agent Action Plan (AAP) documents."
     )
+    parser.add_argument("file", type=str, help="path to the AAP markdown file")
     parser.add_argument(
-        "file", type=str,
-        help="path to the AAP markdown file",
-    )
-    parser.add_argument(
-        "--loc-create", type=int, default=150, metavar="N",
+        "--loc-create",
+        type=int,
+        default=150,
+        metavar="N",
         help="estimated LoC per CREATE file (default: 150)",
     )
     parser.add_argument(
-        "--loc-modify", type=int, default=50, metavar="N",
+        "--loc-modify",
+        type=int,
+        default=50,
+        metavar="N",
         help="estimated LoC per MODIFY file (default: 50)",
     )
     parser.add_argument(
-        "--verbose", action="store_true",
-        help="include verbose heading dump in output",
+        "--verbose", action="store_true", help="include verbose heading dump in output"
     )
     parser.add_argument(
-        "--focus", type=str, default="", metavar="AREA",
+        "--focus",
+        type=str,
+        default="",
+        metavar="AREA",
         help="focus review on a specific area (e.g. 'frontend', 'backend', 'rules')",
     )
 

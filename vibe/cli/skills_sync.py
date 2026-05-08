@@ -21,7 +21,9 @@ def sync_skills_to_claude_code() -> None:
 
     CLAUDE_SKILLS_DIR.mkdir(parents=True, exist_ok=True)
 
-    skill_dirs = sorted(d for d in bundled.iterdir() if d.is_dir() and (d / "SKILL.md").exists())
+    skill_dirs = sorted(
+        d for d in bundled.iterdir() if d.is_dir() and (d / "SKILL.md").exists()
+    )
     created = 0
     updated = 0
     unchanged = 0
@@ -39,7 +41,9 @@ def sync_skills_to_claude_code() -> None:
             updated += 1
         elif link.exists():
             # Non-symlink file/dir exists — skip to avoid data loss
-            console.print(f"  [yellow]Skipping {link.name}: non-symlink already exists at {link}[/]")
+            console.print(
+                f"  [yellow]Skipping {link.name}: non-symlink already exists at {link}[/]"
+            )
             continue
         else:
             created += 1

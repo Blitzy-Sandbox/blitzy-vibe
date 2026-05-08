@@ -9,14 +9,7 @@ console = Console()
 ARCHIE_HOME = Path.home() / ".archie"
 
 # Keys that are noisy or session-specific and should be excluded from the snapshot.
-_EXCLUDED_KEYS = frozenset({
-    "_",
-    "SHLVL",
-    "OLDPWD",
-    "PWD",
-    "TERM_SESSION_ID",
-    "TMPDIR",
-})
+_EXCLUDED_KEYS = frozenset({"_", "SHLVL", "OLDPWD", "PWD", "TERM_SESSION_ID", "TMPDIR"})
 
 
 def repo_tag() -> str:
@@ -30,9 +23,7 @@ def env_file_path() -> Path:
 
 
 def write_archie_env(
-    before: dict[str, str],
-    after: dict[str, str],
-    venv_path: str | None,
+    before: dict[str, str], after: dict[str, str], venv_path: str | None
 ) -> None:
     """Diff two environment snapshots and write to ``~/.archie/<tag>-env``."""
     lines: list[str] = []

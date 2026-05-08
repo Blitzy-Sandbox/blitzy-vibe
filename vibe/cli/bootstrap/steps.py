@@ -20,7 +20,9 @@ class BootstrapContext:
     skip_make: bool = False
     run_tests_flag: bool = False
     blitzy_env_path_arg: Path | None = None
-    blitzy_env_path: Path = field(default_factory=lambda: Path.home() / "Lab" / "Work" / "Blitzy")
+    blitzy_env_path: Path = field(
+        default_factory=lambda: Path.home() / "Lab" / "Work" / "Blitzy"
+    )
     venv_path: Path | None = None
 
 
@@ -61,10 +63,7 @@ def find_or_create_venv(ctx: BootstrapContext) -> None:
     else:
         venv_dir = cwd / ".venv"
         console.print(f"    [dim]No venv found, creating {venv_dir}[/]")
-        subprocess.run(
-            [sys.executable, "-m", "venv", str(venv_dir)],
-            check=True,
-        )
+        subprocess.run([sys.executable, "-m", "venv", str(venv_dir)], check=True)
 
     ctx.venv_path = venv_dir
     os.environ["VIRTUAL_ENV"] = str(venv_dir)
@@ -90,11 +89,7 @@ def load_env_file(ctx: BootstrapContext) -> None:
     """Step 4: Load environment-specific .env file using python-dotenv."""
     from dotenv import dotenv_values
 
-    env_filenames = {
-        "dev": "envfile",
-        "qa": "envfileQA",
-        "prod": "envfilePROD",
-    }
+    env_filenames = {"dev": "envfile", "qa": "envfileQA", "prod": "envfilePROD"}
     filename = env_filenames.get(ctx.environment, "envfile")
     env_file = ctx.blitzy_env_path / filename
 
@@ -162,13 +157,11 @@ def run_make_targets(ctx: BootstrapContext) -> None:
     targets = ["install-deployment-utils", "pre-setup", "init"]
     for target in targets:
         console.print(f"    [dim]Running make {target}...[/]")
-        result = subprocess.run(
-            ["make", target],
-            capture_output=True,
-            text=True,
-        )
+        result = subprocess.run(["make", target], capture_output=True, text=True)
         if result.returncode != 0:
-            console.print(f"    [yellow]make {target} failed (exit {result.returncode})[/]")
+            console.print(
+                f"    [yellow]make {target} failed (exit {result.returncode})[/]"
+            )
             if result.stderr:
                 console.print(f"    [dim]{result.stderr.strip()[:500]}[/]")
             # Non-fatal: continue with other targets

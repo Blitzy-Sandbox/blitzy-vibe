@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 import argparse
-import os
+from datetime import datetime, timedelta
+from pathlib import Path
 import signal
 import sys
 import time
-from datetime import datetime, timedelta
-from pathlib import Path
 
 from rich import print as rprint
 from rich.console import Console
@@ -18,7 +17,6 @@ from vibe.cli.bootstrap.steps import (
     find_or_create_venv,
     load_env_config_yaml,
     load_env_file,
-    run_make_targets,
     set_blitzy_env_path,
     set_local_development,
     set_postgres_port,
@@ -120,15 +118,15 @@ def _is_bootstrap_stale(hours: int = 24) -> bool:
     """Check if the bootstrap environment is stale."""
     env_path = env_file_path()
     timestamp_path = _get_bootstrap_timestamp_path()
-    
+
     # If env file doesn't exist, bootstrap is needed
     if not env_path.exists():
         return True
-    
+
     # If timestamp doesn't exist, consider it stale
     if not timestamp_path.exists():
         return True
-    
+
     try:
         timestamp = float(timestamp_path.read_text().strip())
         age = datetime.now() - datetime.fromtimestamp(timestamp)
@@ -150,15 +148,15 @@ def _cleanup_stale_env_files(days: int = 30) -> None:
     archie_home = Path.home() / ".archie"
     if not archie_home.exists():
         return
-    
+
     current_tag = repo_tag()
     cutoff = datetime.now() - timedelta(days=days)
-    
+
     for env_file in archie_home.glob("*-env"):
         # Skip current project's env file
         if env_file.stem == f"{current_tag}-env":
             continue
-        
+
         try:
             mtime = datetime.fromtimestamp(env_file.stat().st_mtime)
             if mtime < cutoff:
@@ -174,15 +172,13 @@ def _cleanup_stale_env_files(days: int = 30) -> None:
 def run_auto_bootstrap() -> bool:
     """Run a minimal, non-interactive bootstrap. Returns True if successful."""
     try:
-        before_env = dict(os.environ)
-        
         ctx = BootstrapContext(
             environment="dev",
             skip_make=True,  # Keep it fast
             run_tests_flag=False,
             blitzy_env_path_arg=None,
         )
-        
+
         # Run minimal bootstrap steps
         steps = [
             deactivate_venv,
@@ -193,16 +189,16 @@ def run_auto_bootstrap() -> bool:
             set_postgres_port,
             set_local_development,
         ]
-        
+
         for step_fn in steps:
             step_fn(ctx)
-        
+
         # Update timestamp on success
         _update_bootstrap_timestamp()
-        
+
         # Clean up old env files
         _cleanup_stale_env_files()
-        
+
         return True
     except Exception as e:
         logger.warning(f"Auto-bootstrap failed: {e}")
@@ -261,12 +257,12 @@ def _load_messages_from_previous_session(
 def run_cli(args: argparse.Namespace) -> None:
     load_dotenv_values()
     bootstrap_config_files()
-    
+
     # Auto-bootstrap check
     bootstrap_status = None
-    if _has_archie_bootstrap() and not getattr(args, 'skip_auto_bootstrap', False):
-        force_bootstrap = getattr(args, 'force_bootstrap', False)
-        
+    if _has_archie_bootstrap() and not getattr(args, "skip_auto_bootstrap", False):
+        force_bootstrap = getattr(args, "force_bootstrap", False)
+
         if force_bootstrap or _is_bootstrap_stale():
             console.print("[dim]Preparing environment...[/]")
             if run_auto_bootstrap():

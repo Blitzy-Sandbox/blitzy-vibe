@@ -72,5 +72,7 @@ def install_shell_hook() -> bool:
     with rc.open("a", encoding="utf-8") as f:
         f.write(_HOOK_BODY)
 
-    console.print(f"  [green]Hook installed.[/]  Run [bold]source {rc}[/] or open a new terminal to activate.")
+    console.print(
+        f"  [green]Hook installed.[/]  Run [bold]source {rc}[/] or open a new terminal to activate."
+    )
     return True

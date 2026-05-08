@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 from enum import StrEnum, auto
-
 from pathlib import Path
 import subprocess
 import time
@@ -37,7 +36,6 @@ from vibe.cli.textual_ui.widgets.messages import (
     BashOutputMessage,
     ErrorMessage,
     InterruptMessage,
-
     ReasoningMessage,
     StreamingMessageBase,
     UserCommandMessage,
@@ -229,11 +227,11 @@ class VibeApp(App):  # noqa: PLR0904
 
         chat_input_container = self.query_one(ChatInputContainer)
         chat_input_container.focus_input()
-        
+
         # Show bootstrap status if available
         if self._bootstrap_status:
             await self._mount_and_scroll(StatusMessage(self._bootstrap_status))
-        
+
         await self._show_dangerous_directory_warning()
         await self._check_and_show_whats_new()
 
@@ -603,7 +601,9 @@ class VibeApp(App):  # noqa: PLR0904
 
             message = str(e)
             if isinstance(e, RateLimitError):
-                message = "Rate limits exceeded. Please wait a moment before trying again."
+                message = (
+                    "Rate limits exceeded. Please wait a moment before trying again."
+                )
 
             await self._mount_and_scroll(
                 ErrorMessage(message, collapsed=self._tools_collapsed)
@@ -1210,9 +1210,9 @@ def _print_session_resume_message(session_id: str | None) -> None:
 
 
 def run_textual_ui(
-    agent_loop: AgentLoop, 
+    agent_loop: AgentLoop,
     initial_prompt: str | None = None,
-    bootstrap_status: str | None = None
+    bootstrap_status: str | None = None,
 ) -> None:
     update_notifier = PyPIUpdateGateway(project_name="blitzy-agent")
     update_cache_repository = FileSystemUpdateCacheRepository()

@@ -22,21 +22,15 @@ SUBCOMMANDS = {"bootstrap", "skills"}
 
 def _parse_bootstrap_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        prog="blitzy bootstrap",
-        description="Bootstrap a dev/qa/prod environment",
+        prog="blitzy bootstrap", description="Bootstrap a dev/qa/prod environment"
     )
     parser.add_argument(
-        "environment",
-        nargs="?",
-        default="dev",
-        choices=["dev", "qa", "prod"],
+        "environment", nargs="?", default="dev", choices=["dev", "qa", "prod"]
     )
     parser.add_argument("--test", action="store_true", help="Run tests after bootstrap")
     parser.add_argument("--skip-make", action="store_true", help="Skip make targets")
     parser.add_argument(
-        "--blitzy-env-path",
-        type=Path,
-        help="Path to Blitzy env files directory",
+        "--blitzy-env-path", type=Path, help="Path to Blitzy env files directory"
     )
     args = parser.parse_args(sys.argv[2:])
     args.command = "bootstrap"
@@ -45,8 +39,7 @@ def _parse_bootstrap_args() -> argparse.Namespace:
 
 def _parse_skills_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        prog="blitzy skills",
-        description="Manage Blitzy skills",
+        prog="blitzy skills", description="Manage Blitzy skills"
     )
     parser.add_argument(
         "action",
@@ -151,7 +144,7 @@ def parse_arguments() -> argparse.Namespace:
         metavar="SESSION_ID",
         help="Resume a specific session by its ID (supports partial matching)",
     )
-    
+
     parser.add_argument(
         "--force-bootstrap",
         action="store_true",
@@ -162,7 +155,7 @@ def parse_arguments() -> argparse.Namespace:
         action="store_true",
         help="Skip automatic environment bootstrap",
     )
-    
+
     args = parser.parse_args()
     args.command = None
     return args

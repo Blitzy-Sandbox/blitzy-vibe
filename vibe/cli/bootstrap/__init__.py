@@ -28,7 +28,9 @@ console = Console()
 def run_bootstrap(args: argparse.Namespace) -> None:
     """Orchestrate the 9-step bootstrap process."""
     env: str = args.environment
-    console.print(f"\n[bold purple]Blitzy Bootstrap[/] — setting up [cyan]{env}[/] environment\n")
+    console.print(
+        f"\n[bold purple]Blitzy Bootstrap[/] — setting up [cyan]{env}[/] environment\n"
+    )
 
     before_env = dict(os.environ)
 
