@@ -57,6 +57,7 @@ dependencies = [
     "tree-sitter-cpp>=0.23.0",
     "tree-sitter-kotlin>=0.23.0",
     "tree-sitter-markdown>=0.3.0",
+    "anthropic>=0.100.0",
 ]
 
 [project.urls]
@@ -145,6 +146,7 @@ ignore = ["D203", "D205", "D213", "ANN401", "PLR6301"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["ANN", "PLR"]
+"vibe/skills/bundled/**/scripts/*.py" = ["ANN", "PLR", "RUF012"]
 
 [tool.ruff.lint.flake8-tidy-imports]
 ban-relative-imports = "all"
