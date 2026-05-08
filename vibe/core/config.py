@@ -138,6 +138,8 @@ class SessionLoggingConfig(BaseSettings):
 class Backend(StrEnum):
     MISTRAL = auto()
     GENERIC = auto()
+    ANTHROPIC = auto()
+    CLAUDE_CODE = auto()
 
 
 class ProviderConfig(BaseModel):
@@ -487,7 +489,9 @@ class VibeConfig(BaseSettings):
             is_mistral_api = any(
                 provider.api_base.startswith(api_base) for api_base in MISTRAL_API_BASES
             )
-            if (is_mistral_api and provider.backend != Backend.MISTRAL) or (
+            if provider.backend in {Backend.ANTHROPIC, Backend.CLAUDE_CODE}:
+                pass  # these backends don't use the Mistral/generic API base convention
+            elif (is_mistral_api and provider.backend != Backend.MISTRAL) or (
                 not is_mistral_api and provider.backend != Backend.GENERIC
             ):
                 raise WrongBackendError(provider.backend, is_mistral_api)

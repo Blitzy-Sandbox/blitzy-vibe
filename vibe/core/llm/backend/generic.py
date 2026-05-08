@@ -161,7 +161,9 @@ class OpenAIAdapter(APIAdapter):
         headers = self.build_headers(api_key)
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
 
-        logger.debug("Prepared request payload for provider %s: %s", provider.name, payload)
+        logger.debug(
+            "Prepared request payload for provider %s: %s", provider.name, payload
+        )
 
         return PreparedRequest(self.endpoint, headers, body)
 
