@@ -18,7 +18,9 @@ from vibe.core.paths.global_paths import GLOBAL_ENV_FILE
 from vibe.setup.onboarding.base import OnboardingScreen
 
 PROVIDER_HELP = {
-    "mistral": ("https://console.mistral.ai/codestral/cli", "Mistral AI Studio")
+    "mistral": ("https://console.mistral.ai/codestral/cli", "Mistral AI Studio"),
+    "blitzy": ("https://blitzy.com/api-keys", "Blitzy"),
+    "anthropic": ("https://console.anthropic.com/settings/keys", "Anthropic Console"),
 }
 CONFIG_DOCS_URL = (
     "https://github.com/blitzy/blitzy-agent?tab=readme-ov-file#configuration"
