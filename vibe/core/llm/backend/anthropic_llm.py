@@ -369,25 +369,26 @@ class AnthropicBackend:
 
             async with self._get_client().messages.stream(**kwargs) as stream:
                 async for event in stream:
+                    chunks: list[LLMChunk] = []
                     if event.type == "message_start":
                         input_tokens = event.message.usage.input_tokens
                     elif event.type == "content_block_start":
-                        yield from self._on_content_block_start(
-                            event, current_tool_calls
-                        )
+                        chunks = self._on_content_block_start(event, current_tool_calls)
                     elif event.type == "content_block_delta":
-                        yield from self._on_content_block_delta(
-                            event, current_tool_calls
-                        )
+                        chunks = self._on_content_block_delta(event, current_tool_calls)
                     elif event.type == "message_delta":
                         output_tokens = event.usage.output_tokens if event.usage else 0
-                        yield LLMChunk(
-                            message=LLMMessage(role=Role.assistant, content=""),
-                            usage=LLMUsage(
-                                prompt_tokens=input_tokens,
-                                completion_tokens=output_tokens,
-                            ),
-                        )
+                        chunks = [
+                            LLMChunk(
+                                message=LLMMessage(role=Role.assistant, content=""),
+                                usage=LLMUsage(
+                                    prompt_tokens=input_tokens,
+                                    completion_tokens=output_tokens,
+                                ),
+                            )
+                        ]
+                    for chunk in chunks:
+                        yield chunk
 
         except anthropic.APIStatusError as e:
             raise BackendErrorBuilder.build_http_error(
