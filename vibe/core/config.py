@@ -10,7 +10,7 @@ import tomllib
 from typing import Annotated, Any, Literal
 
 from dotenv import dotenv_values
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
 from pydantic.fields import FieldInfo
 from pydantic_core import to_jsonable_python
 from pydantic_settings import (
@@ -45,12 +45,50 @@ def load_dotenv_values(
 
 
 class MissingAPIKeyError(RuntimeError):
-    def __init__(self, env_key: str, provider_name: str) -> None:
-        super().__init__(
-            f"Missing {env_key} environment variable for {provider_name} provider"
-        )
-        self.env_key = env_key
-        self.provider_name = provider_name
+    """Raised when an API key is missing or the user declines interactive entry.
+
+    Supports two construction forms to preserve backward compatibility while
+    enabling the new provider-selection workflow:
+
+    - Legacy: ``MissingAPIKeyError(env_key, provider_name)`` -- used by the
+      existing ``_check_api_key`` validator and ACP/CLI call sites that report
+      a missing environment variable for a configured provider.
+    - New: ``MissingAPIKeyError(provider)`` -- used by
+      ``vibe.core.llm.api_key_prompt.resolve_or_prompt`` when the env-var ->
+      config-field -> interactive-prompt cascade is exhausted (AAP rule 10).
+
+    Instance attributes ``env_key`` and ``provider_name`` are always set, so
+    downstream handlers may inspect them uniformly. The single-argument form
+    leaves ``env_key`` empty and stores the provider token in
+    ``provider_name`` and ``provider``; the two-argument form derives
+    ``provider`` by lowercasing ``provider_name``.
+
+    AAP rule 2: API key values MUST NOT appear in any log line, exception
+    message, or traceback. This class accepts only env-var names and provider
+    identifiers -- never the secret value itself.
+    """
+
+    def __init__(self, *args: str) -> None:
+        match args:
+            case (provider,):
+                # New signature: MissingAPIKeyError(provider) -- AAP rule 10.
+                self.provider = provider
+                self.env_key = ""
+                self.provider_name = provider
+                super().__init__(f"Missing API key for {provider}")
+            case (env_key, provider_name):
+                # Legacy signature: MissingAPIKeyError(env_key, provider_name).
+                self.env_key = env_key
+                self.provider_name = provider_name
+                self.provider = provider_name.lower()
+                super().__init__(
+                    f"Missing {env_key} environment variable "
+                    f"for {provider_name} provider"
+                )
+            case _:
+                raise TypeError(
+                    "MissingAPIKeyError requires 1 or 2 positional arguments"
+                )
 
 
 class MissingPromptFileError(RuntimeError):
@@ -136,6 +174,15 @@ class SessionLoggingConfig(BaseSettings):
 
 
 class Backend(StrEnum):
+    # ``StrEnum`` + ``auto()`` derives each member's value from the lowercase
+    # member name, so ``Backend.BLITZY.value == "blitzy"``. This lowercase
+    # string is the canonical token used across argparse choices, factory map
+    # keys, the session record ``provider`` field, and ``ContextLimitsConfig``
+    # field names (AAP rule 13 -- no orphaned strings).
+    #
+    # ``BLITZY`` is listed first because it is the default provider in the
+    # startup picker (matches "Blitzy (default)" in the AAP user example).
+    BLITZY = auto()
     MISTRAL = auto()
     GENERIC = auto()
     ANTHROPIC = auto()
@@ -265,6 +312,26 @@ class ModelConfig(BaseModel):
 
 
 DEFAULT_PROVIDERS = [
+    # AAP feature: Blitzy is the default provider. ``api_base`` is the root
+    # against which ``BlitzyLLMBackend`` constructs ``/context?...`` and
+    # ``/v1/api/chat`` URLs.
+    ProviderConfig(
+        name="blitzy",
+        api_base="https://api.blitzy.com",
+        api_key_env_var="BLITZY_API_KEY",
+        backend=Backend.BLITZY,
+    ),
+    # AAP feature: Anthropic entry so the factory + ``get_provider_for_model``
+    # pipeline can resolve a backend instance for ``anthropic``-backed models
+    # without requiring users to populate ``[providers]`` manually. The
+    # Anthropic SDK uses its own default URL internally; ``api_base`` is
+    # retained for consistency with the ``ProviderConfig`` schema.
+    ProviderConfig(
+        name="anthropic",
+        api_base="https://api.anthropic.com",
+        api_key_env_var="ANTHROPIC_API_KEY",
+        backend=Backend.ANTHROPIC,
+    ),
     ProviderConfig(
         name="mistral",
         api_base="https://api.mistral.ai/v1",
@@ -305,6 +372,31 @@ DEFAULT_MODELS = [
 ]
 
 
+class ContextLimitsConfig(BaseModel):
+    """Per-provider context window token limits.
+
+    Values are read from the ``[context_limits]`` table in
+    ``~/.blitzy/config.toml`` at startup via the ``TomlFileSettingsSource``
+    pipeline and applied to ``AutoCompactMiddleware`` and
+    ``SessionManager.compact`` (AAP rule 11: configurable, not hardcoded).
+
+    Defaults (AAP sections 0.5.1 and 0.6.1):
+
+    - ``blitzy=128_000`` -- Blitzy default context window.
+    - ``mistral=32_000`` -- Mistral Large / Devstral default.
+    - ``anthropic=200_000`` -- Claude direct API default; the 1M-token beta
+      header is opt-in elsewhere and not part of the default.
+
+    The field names match the lowercase ``Backend`` enum values exactly so
+    that callers can look up a limit by enum value via
+    ``getattr(context_limits, backend.value)`` (AAP rule 13).
+    """
+
+    blitzy: int = 128_000
+    mistral: int = 32_000
+    anthropic: int = 200_000
+
+
 class VibeConfig(BaseSettings):
     active_model: str = "devstral-2"
     textual_theme: str = "terminal"
@@ -322,6 +414,27 @@ class VibeConfig(BaseSettings):
     enable_update_checks: bool = True
     enable_auto_update: bool = True
     api_timeout: float = 720.0
+
+    # --- AAP feature: provider selection + session persistence -------------
+    # Optional API keys stored in ``~/.blitzy/config.toml``. ``SecretStr``
+    # hides values in ``repr()`` and ``model_dump()``; callers must invoke
+    # ``.get_secret_value()`` to read the plaintext. The native env vars
+    # ``BLITZY_API_KEY``, ``ANTHROPIC_API_KEY``, and ``MISTRAL_API_KEY`` are
+    # read directly by ``vibe.core.llm.api_key_prompt.resolve_or_prompt``
+    # via ``os.getenv()``, not through pydantic-settings env binding.
+    blitzy_api_key: SecretStr | None = None
+    anthropic_api_key: SecretStr | None = None
+    mistral_api_key: SecretStr | None = None
+    # Anthropic model identifier consumed by ``AnthropicBackend`` when
+    # building request params. Verified Anthropic model snapshot per
+    # AAP section 0.10.2 (Claude Sonnet 4.6 release).
+    anthropic_model: str = "claude-sonnet-4-6"
+    # Per-provider context-window limits used by ``AutoCompactMiddleware``
+    # and ``SessionManager.compact`` (AAP rule 11). Override via the
+    # ``[context_limits]`` table in ``~/.blitzy/config.toml``.
+    context_limits: ContextLimitsConfig = Field(default_factory=ContextLimitsConfig)
+    # ----------------------------------------------------------------------
+
     providers: list[ProviderConfig] = Field(
         default_factory=lambda: list(DEFAULT_PROVIDERS)
     )
@@ -489,7 +602,11 @@ class VibeConfig(BaseSettings):
             is_mistral_api = any(
                 provider.api_base.startswith(api_base) for api_base in MISTRAL_API_BASES
             )
-            if provider.backend in {Backend.ANTHROPIC, Backend.CLAUDE_CODE}:
+            if provider.backend in {
+                Backend.ANTHROPIC,
+                Backend.CLAUDE_CODE,
+                Backend.BLITZY,
+            }:
                 pass  # these backends don't use the Mistral/generic API base convention
             elif (is_mistral_api and provider.backend != Backend.MISTRAL) or (
                 not is_mistral_api and provider.backend != Backend.GENERIC
@@ -579,8 +696,23 @@ class VibeConfig(BaseSettings):
 
     @classmethod
     def dump_config(cls, config: dict[str, Any]) -> None:
+        # ``tomli_w`` cannot serialize ``None`` values. The companion
+        # ``save_updates`` classmethod already filters ``None`` via
+        # ``to_jsonable_python(exclude_none=True)``; we mirror that
+        # behaviour here so that callers who pass ``config.model_dump()``
+        # directly do not need to repeat the filter step. This is required
+        # because the new optional ``*_api_key`` fields default to ``None``
+        # and would otherwise break serialization.
+        def _strip_none(value: Any) -> Any:
+            if isinstance(value, dict):
+                return {k: _strip_none(v) for k, v in value.items() if v is not None}
+            if isinstance(value, list):
+                return [_strip_none(v) for v in value if v is not None]
+            return value
+
+        sanitized = _strip_none(config)
         with CONFIG_FILE.path.open("wb") as f:
-            tomli_w.dump(config, f)
+            tomli_w.dump(sanitized, f)
 
     @classmethod
     def _migrate(cls) -> None:
