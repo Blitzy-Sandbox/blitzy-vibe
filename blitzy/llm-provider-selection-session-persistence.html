@@ -1,0 +1,1218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Blitzy Agent &mdash; LLM Provider Selection &amp; Session Persistence</title>
+
+  <!--
+    Executive Presentation: LLM Provider Selection & Session Persistence
+    Audience: Engineering leadership, platform stakeholders, release reviewers.
+    Source AAP: blitzy-agent feature delivery, capabilities A/B/C (provider
+    selection at startup, Anthropic backend extension, session persistence
+    with --resume). All slide content is traceable to AAP sections per the
+    brief's Phase 8 traceability table.
+
+    Self-containment guarantee: this file references ONLY (1) Google Fonts
+    via CDN, and (2) reveal.js / Mermaid / Lucide via jsDelivr CDN at pinned
+    versions. No repo-local CSS/JS assets, no image tags, no emoji.
+  -->
+
+  <!--
+    Google Fonts: Inter (body 400/500/600/700), Space Grotesk (display
+    500/600/700), Fira Code (mono 400/500). Single combined <link> per brief.
+  -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=Space+Grotesk:wght@500;600;700&amp;family=Fira+Code:wght@400;500&amp;display=swap">
+
+  <!-- reveal.js core stylesheets, pinned to 5.1.0 -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reset.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.css">
+
+  <style>
+    /* =====================================================================
+       Brand identity tokens. Values are the canonical Blitzy palette as
+       defined in the Executive Presentation rule (AAP section 0.8.3).
+       The hero gradient on the title slide and the navy on the closing
+       slide are verbatim from the brand specification.
+       ===================================================================== */
+    :root {
+      --blitzy-primary: #5B39F3;
+      --blitzy-dark: #2D1C77;
+      --blitzy-teal: #94FAD5;
+      --blitzy-navy: #1A105F;
+      --blitzy-gradient-start: #7A6DEC;
+      --blitzy-gradient-end: #4101DB;
+      --blitzy-bg: #0E0729;
+      --blitzy-surface: #1A105F;
+      --blitzy-surface-2: #2D1C77;
+      --blitzy-text: #FFFFFF;
+      --blitzy-text-muted: rgba(255, 255, 255, 0.72);
+      --blitzy-divider: rgba(148, 250, 213, 0.18);
+      --font-body: 'Inter', system-ui, sans-serif;
+      --font-display: 'Space Grotesk', 'Inter', sans-serif;
+      --font-mono: 'Fira Code', ui-monospace, monospace;
+    }
+
+    html, body { background: var(--blitzy-bg); }
+
+    /* Base reveal.js typography */
+    .reveal {
+      font-family: var(--font-body);
+      color: var(--blitzy-text);
+      background: var(--blitzy-bg);
+      font-size: 36px;
+    }
+
+    .reveal h1,
+    .reveal h2,
+    .reveal h3,
+    .reveal h4 {
+      font-family: var(--font-display);
+      font-weight: 600;
+      letter-spacing: -0.01em;
+      text-transform: none;
+      color: var(--blitzy-text);
+      margin: 0 0 0.4em;
+    }
+
+    .reveal h1 { font-size: 1.9em; line-height: 1.05; }
+    .reveal h2 { font-size: 1.35em; line-height: 1.15; }
+    .reveal h3 { font-size: 1.0em;  line-height: 1.25; font-weight: 500; }
+    .reveal h4 { font-size: 0.75em; line-height: 1.3;  letter-spacing: 0.02em; }
+
+    .reveal p { font-size: 0.62em; line-height: 1.55; color: var(--blitzy-text); margin: 0 0 0.5em; }
+    .reveal strong { color: var(--blitzy-teal); font-weight: 600; }
+
+    /* Default slide layout (overridden by .slide-title and .slide-closing) */
+    .reveal section,
+    .reveal .slides > section {
+      text-align: left;
+      padding: 0 4%;
+      /* box-sizing: border-box ensures reveal.js's inline width: 1920px
+         INCLUDES the horizontal padding, preventing the section (and
+         therefore any child grid) from overflowing the slide bounds. */
+      box-sizing: border-box;
+    }
+    .reveal .slides > section > section {
+      /* Vertical sub-slide containers from reveal also need the same
+         border-box treatment for consistent layout math. */
+      box-sizing: border-box;
+    }
+
+    /* Eyebrow label (mono, uppercase, teal) used at the top of most slides. */
+    .reveal .eyebrow {
+      font-family: var(--font-mono);
+      font-weight: 500;
+      font-size: 0.55em;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--blitzy-teal);
+      margin-bottom: 0.4em;
+    }
+
+    /* Code typography */
+    .reveal pre,
+    .reveal code {
+      font-family: var(--font-mono);
+    }
+    .reveal pre {
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid var(--blitzy-divider);
+      border-radius: 12px;
+      padding: 1em 1.2em;
+      font-size: 0.55em;
+      line-height: 1.55;
+      box-shadow: none;
+      width: 100%;
+      box-sizing: border-box;
+    }
+    .reveal pre code { background: transparent; padding: 0; color: #DDD4FF; }
+
+    /* =====================================================================
+       Title slide. Hero gradient is VERBATIM per the brand spec.
+       Reveal.js renders sections inside a transformed container, so we
+       give the section position/dimensions to ensure the gradient fills.
+       ===================================================================== */
+    .slide-title {
+      background: linear-gradient(68deg, #7A6DEC 15.56%, #5B39F3 62.74%, #4101DB 84.44%);
+      position: relative;
+      height: 100%;
+      width: 100%;
+      padding: 6% 6%;
+      box-sizing: border-box;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+    }
+    .slide-title .eyebrow { color: rgba(255, 255, 255, 0.85); }
+    .slide-title h1 {
+      font-size: 2.4em;
+      line-height: 1.02;
+      max-width: 90%;
+      margin-bottom: 0.6em;
+    }
+    .slide-title h3 {
+      font-weight: 500;
+      font-size: 0.85em;
+      max-width: 80%;
+      color: rgba(255, 255, 255, 0.92);
+      margin-bottom: 1.6em;
+    }
+    .slide-title .title-footer {
+      position: absolute;
+      bottom: 6%;
+      left: 6%;
+      font-family: var(--font-mono);
+      font-size: 0.45em;
+      letter-spacing: 0.12em;
+      color: rgba(255, 255, 255, 0.78);
+      margin: 0;
+    }
+
+    /* Closing slide */
+    .slide-closing {
+      background: var(--blitzy-navy);
+      height: 100%;
+      width: 100%;
+      padding: 6% 6%;
+      box-sizing: border-box;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      position: relative;
+    }
+    .slide-closing h2 { font-weight: 700; font-size: 1.6em; max-width: 90%; }
+    .slide-closing .closing-list { list-style: none; padding: 0; margin: 1.2em 0 0; counter-reset: closing; }
+    .slide-closing .closing-list li {
+      counter-increment: closing;
+      padding: 0.5em 0 0.5em 2.4em;
+      position: relative;
+      font-size: 0.62em;
+      line-height: 1.5;
+      color: var(--blitzy-text);
+    }
+    .slide-closing .closing-list li::before {
+      content: counter(closing, decimal-leading-zero);
+      position: absolute;
+      left: 0;
+      top: 0.5em;
+      font-family: var(--font-mono);
+      font-size: 0.85em;
+      letter-spacing: 0.1em;
+      color: var(--blitzy-teal);
+    }
+    .slide-closing .closing-footer {
+      position: absolute;
+      bottom: 6%;
+      left: 6%;
+      right: 6%;
+      font-family: var(--font-mono);
+      font-size: 0.42em;
+      letter-spacing: 0.1em;
+      color: var(--blitzy-text-muted);
+      margin: 0;
+    }
+
+    /* =====================================================================
+       Section divider. Two-tone purple gradient with a small teal pill rule.
+       A large Lucide icon is absolutely positioned in the bottom-right corner.
+       ===================================================================== */
+    .slide-divider {
+      background: linear-gradient(135deg, #2D1C77 0%, #1A105F 100%);
+      padding: 8% 6%;
+      box-sizing: border-box;
+      position: relative;
+      height: 100%;
+      width: 100%;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+    }
+    .slide-divider .divider-eyebrow {
+      font-family: var(--font-mono);
+      color: var(--blitzy-teal);
+      font-size: 0.6em;
+      letter-spacing: 0.22em;
+      text-transform: uppercase;
+      margin-bottom: 0.4em;
+    }
+    .slide-divider .divider-headline {
+      font-family: var(--font-display);
+      font-size: 1.7em;
+      line-height: 1.05;
+      max-width: 80%;
+      font-weight: 600;
+    }
+    .slide-divider .divider-rule {
+      height: 4px;
+      width: 96px;
+      background: var(--blitzy-teal);
+      margin: 1em 0 1.4em;
+      border-radius: 999px;
+    }
+    .slide-divider .divider-icon {
+      position: absolute;
+      right: 6%;
+      bottom: 6%;
+      color: var(--blitzy-teal);
+      opacity: 0.85;
+    }
+    .slide-divider .divider-icon [data-lucide] {
+      width: 96px;
+      height: 96px;
+      stroke-width: 1.4;
+    }
+
+    /* =====================================================================
+       KPI card grid (slide 2). Four cards in a row, each with an icon at
+       top, large value, mono label, and a small descriptive line.
+       ===================================================================== */
+    .kpi-grid {
+      display: grid;
+      /* minmax(0, 1fr) is required so the cards can shrink below their
+         intrinsic min-content width when long descriptions would
+         otherwise push the row past the slide bounds. */
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 1.2em;
+      margin-top: 1.5em;
+      width: 100%;
+      max-width: 100%;
+    }
+    .kpi-card {
+      background: linear-gradient(160deg, rgba(91, 57, 243, 0.25), rgba(45, 28, 119, 0.55));
+      border: 1px solid var(--blitzy-divider);
+      border-radius: 16px;
+      padding: 1.3em 1.4em;
+      display: flex;
+      flex-direction: column;
+      gap: 0.4em;
+      box-sizing: border-box;
+      min-width: 0;
+    }
+    .kpi-card .kpi-icon { color: var(--blitzy-teal); }
+    .kpi-card .kpi-icon [data-lucide] { width: 32px; height: 32px; stroke-width: 1.6; }
+    .kpi-card .kpi-value {
+      font-family: var(--font-display);
+      font-size: 1.6em;
+      font-weight: 700;
+      color: var(--blitzy-text);
+      line-height: 1;
+    }
+    .kpi-card .kpi-label {
+      font-family: var(--font-mono);
+      font-size: 0.45em;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--blitzy-teal);
+    }
+    .kpi-card .kpi-desc { font-size: 0.5em; line-height: 1.4; color: var(--blitzy-text-muted); margin: 0; }
+
+    /* =====================================================================
+       Styled HTML tables (slides 12 and 15). Mono uppercase headers in
+       teal, divider lines between rows, and pill chips for rule refs.
+       ===================================================================== */
+    .blitzy-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.55em;
+      margin-top: 1em;
+    }
+    .blitzy-table th,
+    .blitzy-table td {
+      padding: 0.7em 1em;
+      text-align: left;
+      border-bottom: 1px solid var(--blitzy-divider);
+      vertical-align: top;
+    }
+    .blitzy-table th {
+      font-family: var(--font-mono);
+      color: var(--blitzy-teal);
+      font-weight: 500;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      font-size: 0.85em;
+    }
+    .blitzy-table tr:last-child td { border-bottom: none; }
+    .blitzy-table td code {
+      background: rgba(148, 250, 213, 0.08);
+      padding: 0.08em 0.4em;
+      border-radius: 4px;
+      font-size: 0.95em;
+      color: #E3DEFF;
+    }
+    .blitzy-table .pill {
+      display: inline-block;
+      padding: 0.18em 0.7em;
+      border-radius: 999px;
+      font-family: var(--font-mono);
+      font-size: 0.85em;
+      background: rgba(148, 250, 213, 0.15);
+      color: var(--blitzy-teal);
+      border: 1px solid rgba(148, 250, 213, 0.35);
+      margin-right: 0.3em;
+      margin-top: 0.3em;
+    }
+
+    /* =====================================================================
+       Mermaid container. Subtle off-white background, divider border,
+       generous padding to keep diagram from touching the panel edges.
+       ===================================================================== */
+    .mermaid-container {
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid var(--blitzy-divider);
+      border-radius: 18px;
+      /* Tight padding so the SVG gets maximum slide real estate; the
+         border-radius still reads visually even at 0.6em. */
+      padding: 0.6em 0.8em;
+      margin-top: 0.6em;
+    }
+    .mermaid-container .mermaid {
+      display: flex;
+      justify-content: center;
+      font-size: 0.85em;
+      overflow: hidden;
+    }
+    /*
+       Force the Mermaid-generated SVG to scale to the container width and
+       cap its height so a tall TD flowchart cannot push past the slide
+       bounds. This overrides Mermaid's default inline `style="max-width:..."`
+       that is computed from the (potentially-zero) parent width at render
+       time. The lazy-render JS pattern below ensures the SVG is sized off
+       the visible slide, but these CSS rules are the belt-and-suspenders.
+    */
+    .mermaid-container .mermaid svg {
+      /* Allow the diagram to scale up to fit the available slide area.
+         max-width: 100% prevents horizontal overflow; max-height matches
+         the reserved vertical region. The diagram's intrinsic aspect
+         ratio is preserved by Mermaid's viewBox. */
+      max-width: 100% !important;
+      max-height: 860px !important;
+      width: auto !important;
+      height: auto !important;
+      display: block;
+      margin: 0 auto;
+    }
+    .mermaid-container.compact { padding: 1em; }
+    .mermaid-container.compact .mermaid { font-size: 0.72em; }
+    .mermaid-container.compact .mermaid svg { max-height: 560px !important; }
+
+    /* Icon row (Lucide icons in a horizontal strip with mono labels) */
+    .icon-row {
+      display: flex;
+      gap: 1.5em;
+      align-items: center;
+      margin: 0.8em 0 1.2em;
+      color: var(--blitzy-teal);
+      flex-wrap: wrap;
+    }
+    .icon-row .icon-item {
+      display: flex;
+      align-items: center;
+      gap: 0.6em;
+    }
+    .icon-row [data-lucide] {
+      width: 36px;
+      height: 36px;
+      stroke-width: 1.6;
+    }
+    .icon-row .icon-label {
+      font-family: var(--font-mono);
+      color: var(--blitzy-text-muted);
+      font-size: 0.5em;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+
+    /* Two-column content layout for slides 5, 7, 9, 14 */
+    .two-col {
+      display: grid;
+      /* minmax(0, ...) so long <code> tokens cannot push columns wider
+         than their fractional share of the slide. */
+      grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr);
+      gap: 2em;
+      margin-top: 1.2em;
+      align-items: start;
+      width: 100%;
+      max-width: 100%;
+    }
+    .two-col .col {
+      display: flex;
+      flex-direction: column;
+      gap: 0.8em;
+      min-width: 0;
+    }
+    .two-col ul {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+    }
+    .two-col ul li {
+      padding: 0.4em 0 0.4em 1.4em;
+      position: relative;
+      font-size: 0.6em;
+      line-height: 1.5;
+      color: var(--blitzy-text);
+    }
+    .two-col ul li::before {
+      content: "";
+      position: absolute;
+      left: 0;
+      top: 0.95em;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--blitzy-teal);
+      box-shadow: 0 0 0 3px rgba(148, 250, 213, 0.12);
+    }
+    .two-col code {
+      background: rgba(148, 250, 213, 0.08);
+      padding: 0.08em 0.4em;
+      border-radius: 4px;
+      color: #E3DEFF;
+      word-break: break-word;
+      overflow-wrap: anywhere;
+    }
+    .two-col pre { overflow-x: auto; max-width: 100%; }
+    .two-col h4 {
+      font-size: 0.7em;
+      color: var(--blitzy-teal);
+      font-family: var(--font-mono);
+      font-weight: 500;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      margin: 0 0 0.6em;
+    }
+
+    /* Closing slide brand lockup */
+    .brand-lockup {
+      display: flex;
+      flex-direction: column;
+      gap: 0.4em;
+      margin-top: 1.8em;
+    }
+    .brand-lockup .lockup-mark {
+      font-family: var(--font-display);
+      font-size: 1.8em;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      background: linear-gradient(90deg, var(--blitzy-teal), #FFFFFF);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+      line-height: 1;
+    }
+    .brand-lockup .lockup-sub {
+      font-family: var(--font-mono);
+      color: var(--blitzy-teal);
+      font-size: 0.55em;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+    }
+
+    /* Reveal.js slide-number override */
+    .reveal .slide-number {
+      font-family: var(--font-mono);
+      color: var(--blitzy-text-muted);
+      background: transparent;
+      font-size: 14px;
+      letter-spacing: 0.1em;
+    }
+
+    /* Terminal block (verbatim prompt content, ASCII trees). white-space:pre
+       is critical to preserve the double-space before "(default)" in the
+       provider selection prompt per AAP section 0.2.2. */
+    .terminal-block {
+      background: #08051A;
+      border: 1px solid var(--blitzy-divider);
+      border-radius: 12px;
+      padding: 1.1em 1.3em;
+      font-family: var(--font-mono);
+      font-size: 0.55em;
+      line-height: 1.7;
+      color: #DDD4FF;
+      white-space: pre;
+      overflow-x: auto;
+    }
+    .terminal-block .prompt-symbol { color: var(--blitzy-teal); }
+    .terminal-block .tree-branch { color: var(--blitzy-text-muted); }
+    .terminal-block .tree-file { color: #E3DEFF; }
+    .terminal-block .tree-dir { color: var(--blitzy-teal); }
+
+    /* Rule callout block. Used to highlight verbatim behavioral rules from
+       AAP section 0.8.1 alongside relevant slides. */
+    .rule-callout {
+      display: flex;
+      gap: 0.9em;
+      align-items: flex-start;
+      background: rgba(148, 250, 213, 0.06);
+      border-left: 3px solid var(--blitzy-teal);
+      padding: 0.9em 1.1em;
+      border-radius: 10px;
+      margin-top: 1em;
+    }
+    .rule-callout .rule-icon { color: var(--blitzy-teal); flex-shrink: 0; }
+    .rule-callout .rule-icon [data-lucide] { width: 28px; height: 28px; stroke-width: 1.6; }
+    .rule-callout .rule-body { font-size: 0.55em; line-height: 1.5; margin: 0; min-width: 0; word-break: break-word; }
+    .rule-callout .rule-body strong {
+      color: var(--blitzy-teal);
+      font-family: var(--font-mono);
+      font-weight: 500;
+    }
+    .rule-callout .rule-body code { word-break: break-word; overflow-wrap: anywhere; }
+
+    /* Global wrap policy for inline code in tables, callouts, lists */
+    .reveal td code,
+    .reveal li code,
+    .reveal p code { word-break: break-word; overflow-wrap: anywhere; }
+
+    /* Slide 2 lead paragraph (executive summary text). */
+    .lead-para {
+      font-size: 0.62em;
+      line-height: 1.55;
+      max-width: 88%;
+      color: var(--blitzy-text-muted);
+      margin: 0 0 0.4em;
+    }
+
+    /* Caption text used beneath diagrams (slides 3, 10). */
+    .diagram-caption {
+      font-family: var(--font-mono);
+      color: var(--blitzy-text-muted);
+      font-size: 0.5em;
+      letter-spacing: 0.08em;
+      margin: 0.5em 0 0;
+    }
+    .diagram-caption.dual { display: flex; flex-direction: column; gap: 0.25em; }
+
+    /* Title slide icon row override (white tint) */
+    .slide-title .icon-row { color: rgba(255, 255, 255, 0.95); }
+    .slide-title .icon-row .icon-label { color: rgba(255, 255, 255, 0.85); }
+    .slide-title .icon-row [data-lucide] { width: 28px; height: 28px; stroke-width: 1.7; }
+  </style>
+</head>
+<body>
+  <div class="reveal">
+    <div class="slides">
+
+      <!-- =================================================================
+           SLIDE 1 — Title hero. Gradient background per Blitzy brand spec.
+           AAP section 0.1 (Executive Summary).
+           ================================================================= -->
+      <section class="slide-title">
+        <p class="eyebrow">BLITZY AGENT &middot; FEATURE DELIVERY</p>
+        <h1>LLM Provider Selection &amp; Session Persistence</h1>
+        <h3>A three-capability extension to the blitzy-agent CLI</h3>
+        <div class="icon-row">
+          <span class="icon-item">
+            <i data-lucide="cpu"></i>
+            <span class="icon-label">Provider Selection</span>
+          </span>
+          <span class="icon-item">
+            <i data-lucide="key-round"></i>
+            <span class="icon-label">Anthropic Backend</span>
+          </span>
+          <span class="icon-item">
+            <i data-lucide="save"></i>
+            <span class="icon-label">Session Persistence</span>
+          </span>
+        </div>
+        <p class="title-footer">blitzy-agent &middot; v0.1.0 &middot; python &ge;3.12</p>
+      </section>
+
+      <!-- =================================================================
+           SLIDE 2 — Executive Summary KPIs. Four cards highlighting the
+           feature scope and quality gates. AAP section 0.1 + section 0.9.5.
+           ================================================================= -->
+      <section>
+        <p class="eyebrow">EXECUTIVE SUMMARY</p>
+        <h2>Three capabilities, one cohesive startup pipeline</h2>
+        <p class="lead-para">
+          A numbered prompt is presented before any LLM backend is instantiated,
+          the Anthropic backend resolves its API key through a deterministic
+          env &rarr; config &rarr; prompt chain, and a SessionManager writes
+          per-repo, per-branch JSON after every turn with auto-compaction at
+          80&percnt; of the active provider&rsquo;s configured context limit.
+        </p>
+        <div class="kpi-grid">
+          <div class="kpi-card">
+            <span class="kpi-icon"><i data-lucide="layers"></i></span>
+            <span class="kpi-value">3</span>
+            <span class="kpi-label">Capabilities</span>
+            <p class="kpi-desc">Provider selection, Anthropic backend, session persistence</p>
+          </div>
+          <div class="kpi-card">
+            <span class="kpi-icon"><i data-lucide="box"></i></span>
+            <span class="kpi-value">3</span>
+            <span class="kpi-label">Providers</span>
+            <p class="kpi-desc">Blitzy (default) &middot; Mistral &middot; Anthropic</p>
+          </div>
+          <div class="kpi-card">
+            <span class="kpi-icon"><i data-lucide="gauge"></i></span>
+            <span class="kpi-value">&ge;80&percnt;</span>
+            <span class="kpi-label">Test Coverage</span>
+            <p class="kpi-desc">Line coverage gate per AAP &sect;0.9.5</p>
+          </div>
+          <div class="kpi-card">
+            <span class="kpi-icon"><i data-lucide="shield-check"></i></span>
+            <span class="kpi-value">13</span>
+            <span class="kpi-label">Behavioral Rules</span>
+            <p class="kpi-desc">All verbatim from prompt, mapped to tests</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- =================================================================
+           SLIDE 3 — Startup architecture flow. Verbatim Mermaid diagram
+           from AAP section 0.5.4. DO NOT alter node IDs or edge labels.
+           ================================================================= -->
+      <section>
+        <p class="eyebrow">ARCHITECTURE &middot; &sect;0.5.4</p>
+        <h2>End-to-end startup flow</h2>
+        <p class="diagram-caption">Argparse &rarr; resume check &rarr; provider picker &rarr; key resolution &rarr; backend factory</p>
+        <div class="mermaid-container">
+          <pre class="mermaid">
+flowchart TD
+    A[python -m vibe] --> B[argparse]
+    B --> C{--resume present?}
+    C -- Yes --> D[git_context.detect repo, branch]
+    D --> E[SessionManager.list_sessions]
+    E --> F{sessions found?}
+    F -- Yes --> G[session_picker.select_session]
+    G --> H[Load messages + provider from session JSON]
+    H --> Z[Instantiate backend via factory]
+    F -- No --> I[Print no-sessions notice]
+    I --> J{--provider present?}
+    C -- No --> J
+    J -- Yes --> K[provider_string_to_backend]
+    J -- No --> L[provider_picker.select_provider]
+    L --> K
+    K --> M[api_key_prompt.resolve_or_prompt]
+    M --> N{Key resolved?}
+    N -- No --> X[raise MissingAPIKeyError, exit]
+    N -- Yes --> Z
+    Z --> Y[run_cli loop]
+          </pre>
+        </div>
+      </section>
+
+      <!-- =================================================================
+           SLIDE 4 — Section Divider: Provider Selection (Capability A).
+           ================================================================= -->
+      <section class="slide-divider">
+        <p class="divider-eyebrow">Capability A &middot; 01 of 03</p>
+        <div class="divider-rule"></div>
+        <h2 class="divider-headline">Interactive provider picker before any backend constructs</h2>
+        <span class="divider-icon"><i data-lucide="cpu"></i></span>
+      </section>
+
+      <!-- =================================================================
+           SLIDE 5 — Provider Selection Details. Verbatim prompt from AAP
+           section 0.2.2 (note the double-space before "(default)" which
+           MUST be preserved). Right column lists CLI behaviors.
+           ================================================================= -->
+      <section>
+        <p class="eyebrow">Provider Selection &middot; Capability A</p>
+        <h2>Numbered prompt &mdash; verbatim per AAP &sect;0.2.2</h2>
+        <div class="two-col">
+          <div class="col">
+            <div class="terminal-block">Select LLM provider:
+[1] Blitzy  (default)
+[2] Mistral
+[3] Anthropic
+<span class="prompt-symbol">&gt;</span></div>
+          </div>
+          <div class="col">
+            <ul>
+              <li>Empty input (Enter) selects <strong>[1] Blitzy</strong> &mdash; the default</li>
+              <li>Case-insensitive token matching: <code>1 | blitzy | 2 | mistral | 3 | anthropic</code></li>
+              <li><code>--provider {blitzy,mistral,anthropic}</code> skips the prompt entirely</li>
+              <li><code>--resume</code> opens the session picker; falls through to the provider picker when no sessions exist for the current repo and branch</li>
+            </ul>
+            <div class="rule-callout">
+              <span class="rule-icon"><i data-lucide="shield"></i></span>
+              <p class="rule-body">
+                <strong>Rule 4</strong> &mdash; Provider selection MUST be displayed before any backend is instantiated; verified by asserting no backend constructor is called if selection is cancelled.
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- =================================================================
+           SLIDE 6 — Section Divider: Anthropic Backend (Capability B).
+           ================================================================= -->
+      <section class="slide-divider">
+        <p class="divider-eyebrow">Capability B &middot; 02 of 03</p>
+        <div class="divider-rule"></div>
+        <h2 class="divider-headline">Direct Anthropic SDK with deterministic key resolution</h2>
+        <span class="divider-icon"><i data-lucide="key-round"></i></span>
+      </section>
+
+      <!-- =================================================================
+           SLIDE 7 — Anthropic Key Resolution Flow. Left column shows the
+           Mermaid flow; right column lists configuration knobs and the
+           supporting behavioral rule callout.
+           ================================================================= -->
+      <section>
+        <p class="eyebrow">Anthropic Backend &middot; Capability B</p>
+        <h2>Deterministic three-tier key resolution</h2>
+        <div class="two-col">
+          <div class="col">
+            <div class="mermaid-container compact">
+              <pre class="mermaid">
+flowchart LR
+    Start[AnthropicBackend.__init__] --> Env{ANTHROPIC_API_KEY env set?}
+    Env -- Yes --> Use[Use env value]
+    Env -- No --> Cfg{config.anthropic_api_key set?}
+    Cfg -- Yes --> Use
+    Cfg -- No --> Prompt[Interactive getpass prompt]
+    Prompt --> Empty{Empty input?}
+    Empty -- Yes --> Err[raise MissingAPIKeyError, exit]
+    Empty -- No --> Save{Save to ~/.blitzy/config.toml?}
+    Save -- Yes --> Persist[tomli_w write]
+    Save -- No --> Use
+    Persist --> Use
+    Use --> Client[Construct anthropic.AsyncAnthropic]
+    Client --> Done[Backend ready]
+              </pre>
+            </div>
+          </div>
+          <div class="col">
+            <ul>
+              <li>Default model: <code>claude-sonnet-4-6</code> (pinned snapshot, AAP &sect;0.10.2)</li>
+              <li>Config field <code>anthropic_model</code> overrides the default</li>
+              <li>Streaming via <code>client.messages.stream()</code> &mdash; unchanged from the existing implementation</li>
+              <li>Existing pin <code>anthropic&gt;=0.100.0</code> retained (boundary directive: additive extension only)</li>
+            </ul>
+            <div class="rule-callout">
+              <span class="rule-icon"><i data-lucide="lock-keyhole"></i></span>
+              <p class="rule-body">
+                <strong>Rule 10</strong> &mdash; <code>MissingAPIKeyError</code> MUST be raised and the agent MUST exit if the user declines interactive key entry; verified by test mocking declined input for each provider.
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- =================================================================
+           SLIDE 8 — Section Divider: Session Persistence (Capability C).
+           ================================================================= -->
+      <section class="slide-divider">
+        <p class="divider-eyebrow">Capability C &middot; 03 of 03</p>
+        <div class="divider-rule"></div>
+        <h2 class="divider-headline">Per-repo, per-branch JSON sessions with auto-compaction</h2>
+        <span class="divider-icon"><i data-lucide="save"></i></span>
+      </section>
+
+
+      <!-- =================================================================
+           SLIDE 9 — Session Storage Layout. Left column shows the on-disk
+           tree; right column shows the verbatim JSON record schema from
+           AAP section 0.2.2.
+           ================================================================= -->
+      <section>
+        <p class="eyebrow">Session Persistence &middot; Storage</p>
+        <h2>Filesystem layout &mdash; one JSON document per session</h2>
+        <div class="two-col">
+          <div class="col">
+            <div class="terminal-block"><span class="tree-dir">~/.blitzy/</span>
+&#9500;&#9472;&#9472; <span class="tree-file">config.toml</span>
+&#9500;&#9472;&#9472; <span class="tree-file">.env</span>
+&#9492;&#9472;&#9472; <span class="tree-dir">sessions/</span>
+    &#9500;&#9472;&#9472; <span class="tree-dir">blitzy-agent/</span>
+    &#9474;   &#9500;&#9472;&#9472; <span class="tree-dir">main/</span>
+    &#9474;   &#9474;   &#9500;&#9472;&#9472; <span class="tree-file">a1b2c3d4-....json</span>
+    &#9474;   &#9474;   &#9492;&#9472;&#9472; <span class="tree-file">f0e1d2c3-....json</span>
+    &#9474;   &#9492;&#9472;&#9472; <span class="tree-dir">feature-branch/</span>
+    &#9474;       &#9492;&#9472;&#9472; <span class="tree-file">99887766-....json</span>
+    &#9492;&#9472;&#9472; <span class="tree-dir">_unknown/</span>
+        &#9492;&#9472;&#9472; <span class="tree-dir">_unknown/</span>
+            &#9492;&#9472;&#9472; <span class="tree-file">11223344-....json</span></div>
+          </div>
+          <div class="col">
+            <h4>Record schema</h4>
+<pre><code>{
+  "session_id": "&lt;uuid4&gt;",
+  "created_at": "&lt;ISO 8601&gt;",
+  "provider": "&lt;blitzy|mistral|anthropic&gt;",
+  "repo": "&lt;str&gt;",
+  "branch": "&lt;str&gt;",
+  "messages": [...],
+  "compacted_summary": "&lt;str|null&gt;"
+}</code></pre>
+            <div class="rule-callout">
+              <span class="rule-icon"><i data-lucide="file-cog"></i></span>
+              <p class="rule-body">
+                <strong>Rule 6</strong> &mdash; Session files MUST be written (full overwrite) after every turn at <code>~/.blitzy/sessions/{repo_name}/{branch_name}/</code>.
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- =================================================================
+           SLIDE 10 — Auto-Compaction Per-Turn Flow. Verbatim Mermaid
+           diagram from AAP section 0.5.5. Caption documents the token
+           estimator and per-provider context limit defaults.
+           ================================================================= -->
+      <section>
+        <p class="eyebrow">Session Persistence &middot; Compaction &middot; &sect;0.5.5</p>
+        <h2>Per-turn loop with 80&percnt;-threshold auto-compaction</h2>
+        <div class="mermaid-container">
+          <pre class="mermaid">
+flowchart LR
+    A[User input] --> B[Append LLMMessage to session.messages]
+    B --> C[AutoCompactMiddleware.before_turn]
+    C --> D{tokens >= 80 percent of context_limit?}
+    D -- Yes --> E[SessionManager.compact session, limit]
+    E --> F[backend.complete_streaming]
+    D -- No --> F
+    F --> G[Append assistant LLMMessage]
+    G --> H[SessionManager.save full overwrite]
+    H --> I[observability.metrics.increment turns_completed]
+    I --> J[Wait for next input]
+          </pre>
+        </div>
+        <div class="diagram-caption dual">
+          <span>Token estimator: <code>len(json.dumps(messages)) // 4</code></span>
+          <span>Defaults (overridable via <code>[context_limits]</code>): <code>blitzy=128000</code>, <code>mistral=32000</code>, <code>anthropic=200000</code></span>
+        </div>
+        <div class="rule-callout">
+          <span class="rule-icon"><i data-lucide="gauge"></i></span>
+          <p class="rule-body">
+            <strong>Rule 7</strong> &mdash; Auto-compaction MUST trigger when the token estimate exceeds 80&percnt; of the active provider&rsquo;s context limit; MUST replace compacted messages with a single system summary; MUST preserve the most recent messages verbatim.
+          </p>
+        </div>
+      </section>
+
+      <!-- =================================================================
+           SLIDE 11 — Section Divider: Risks and Mitigations.
+           ================================================================= -->
+      <section class="slide-divider">
+        <p class="divider-eyebrow">Risk Posture</p>
+        <div class="divider-rule"></div>
+        <h2 class="divider-headline">Boundaries, secrets, fallbacks &mdash; engineered for safe rollout</h2>
+        <span class="divider-icon"><i data-lucide="shield-alert"></i></span>
+      </section>
+
+      <!-- =================================================================
+           SLIDE 12 — Risk Table. Four highest-priority risks with their
+           controls and the tests that verify them. Pill chips reference
+           AAP section 0.8.1 behavioral rules.
+           ================================================================= -->
+      <section>
+        <p class="eyebrow">Risks and Mitigations</p>
+        <h2>Four highest-priority risks and their controls</h2>
+        <table class="blitzy-table">
+          <thead>
+            <tr>
+              <th>Risk</th>
+              <th>Surface</th>
+              <th>Mitigation</th>
+              <th>Verified by</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>Boundary violation</strong></td>
+              <td>Code outside <code>vibe/core/llm/</code>, <code>vibe/core/</code>, <code>vibe/cli/</code>, <code>pyproject.toml</code></td>
+              <td>Scoped review and explicit OUT-OF-SCOPE list (AAP &sect;0.7.2)</td>
+              <td>File-touch diff audit during PR</td>
+            </tr>
+            <tr>
+              <td><strong>API key leakage</strong></td>
+              <td>Logs, exceptions, tracebacks</td>
+              <td><code>observability.KEY_MASK_FILTER</code> plus <code>register_sensitive(value)</code> at acquisition time</td>
+              <td><code>tests/test_api_key_masking.py</code><br><span class="pill">Rule 2</span></td>
+            </tr>
+            <tr>
+              <td><strong>Git context absent</strong></td>
+              <td><code>.git</code> missing or unreadable in cwd</td>
+              <td>Pure-Python detector returns <code>("", "")</code> and never raises; storage falls back to <code>_unknown/_unknown/</code></td>
+              <td><code>tests/test_git_context.py</code><br><span class="pill">Rule 3</span></td>
+            </tr>
+            <tr>
+              <td><strong>SSE parse drift</strong></td>
+              <td>Blitzy <code>/v1/api/chat</code> event payload schema variance</td>
+              <td>Field-priority <code>content &rarr; text &rarr; message &rarr; delta.content</code>; events with none of the fields are silently skipped</td>
+              <td><code>tests/backend/test_blitzy_backend.py</code><br><span class="pill">Rule 8</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <!-- =================================================================
+           SLIDE 13 — Section Divider: Developer Onboarding.
+           ================================================================= -->
+      <section class="slide-divider">
+        <p class="divider-eyebrow">Developer Onboarding</p>
+        <div class="divider-rule"></div>
+        <h2 class="divider-headline">Three artifacts, one config file, three env vars</h2>
+        <span class="divider-icon"><i data-lucide="compass"></i></span>
+      </section>
+
+      <!-- =================================================================
+           SLIDE 14 — Developer Onboarding details. Env vars in the left
+           column, TOML config sample on the right, iconic CLI invocations
+           in the icon row beneath both columns.
+           ================================================================= -->
+      <section>
+        <p class="eyebrow">Onboarding</p>
+        <h2>Configure once, switch providers freely</h2>
+        <div class="two-col">
+          <div class="col">
+            <h4>Environment variables</h4>
+            <ul>
+              <li><code>BLITZY_API_KEY</code> &mdash; Blitzy backend</li>
+              <li><code>ANTHROPIC_API_KEY</code> &mdash; Anthropic SDK</li>
+              <li><code>MISTRAL_API_KEY</code> &mdash; Mistral backend (existing)</li>
+              <li><code>VIBE_HOME</code> &mdash; override for <code>~/.blitzy/</code> storage root</li>
+            </ul>
+          </div>
+          <div class="col">
+            <h4><code>~/.blitzy/config.toml</code> (additive)</h4>
+<pre><code># All fields below are OPTIONAL &mdash; defaults apply when absent.
+blitzy_api_key = "..."
+anthropic_api_key = "..."
+mistral_api_key = "..."
+anthropic_model = "claude-sonnet-4-6"
+
+[context_limits]
+blitzy = 128000
+mistral = 32000
+anthropic = 200000</code></pre>
+          </div>
+        </div>
+        <div class="icon-row">
+          <span class="icon-item">
+            <i data-lucide="folder"></i>
+            <span class="icon-label">~/.blitzy/sessions/</span>
+          </span>
+          <span class="icon-item">
+            <i data-lucide="file-json"></i>
+            <span class="icon-label">{session_id}.json</span>
+          </span>
+          <span class="icon-item">
+            <i data-lucide="terminal"></i>
+            <span class="icon-label">vibe --resume</span>
+          </span>
+          <span class="icon-item">
+            <i data-lucide="terminal-square"></i>
+            <span class="icon-label">vibe --provider blitzy</span>
+          </span>
+        </div>
+      </section>
+
+      <!-- =================================================================
+           SLIDE 15 — Validation Framework. Quality gates from AAP section
+           0.9 mapped to the tests that provide their evidence.
+           ================================================================= -->
+      <section>
+        <p class="eyebrow">Validation Framework &middot; &sect;0.9</p>
+        <h2>Quality gates and their evidence</h2>
+        <table class="blitzy-table">
+          <thead>
+            <tr>
+              <th>Gate</th>
+              <th>Scope</th>
+              <th>Evidence</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>Gate 1</strong></td>
+              <td>Interface Conformance</td>
+              <td><code>tests/test_backend_conformance.py</code> parameterized over <code>BACKEND_FACTORY</code> &mdash; each backend <code>isinstance(b, BackendLike)</code><br><span class="pill">Rule 1</span></td>
+            </tr>
+            <tr>
+              <td><strong>Gate 2</strong></td>
+              <td>Config Propagation</td>
+              <td><code>--provider</code> &rarr; factory &rarr; backend; <code>--resume</code> restores provider from session record<br><span class="pill">Rules 4, 5, 11, 13</span></td>
+            </tr>
+            <tr>
+              <td><strong>Gate 8</strong></td>
+              <td>Integration Sign-off</td>
+              <td><code>@pytest.mark.integration</code> SSE stream test (Blitzy) and streaming token test (Anthropic)<br><span class="pill">Rules 1, 9</span></td>
+            </tr>
+            <tr>
+              <td><strong>Gate 9</strong></td>
+              <td>Wiring Verification</td>
+              <td>Per-provider entrypoint reachability; resume-with-sessions and empty-list paths<br><span class="pill">Rules 4, 5</span></td>
+            </tr>
+            <tr>
+              <td><strong>Gate 10</strong></td>
+              <td>Test Execution</td>
+              <td><code>pytest tests/</code> zero failures, &ge;80&percnt; coverage for <code>git_context.py</code>, <code>session.py</code>, <code>blitzy.py</code>, <code>anthropic_llm.py</code> (modified)<br><span class="pill">All rules</span></td>
+            </tr>
+            <tr>
+              <td><strong>Gate 12</strong></td>
+              <td>Config Propagation Tracing</td>
+              <td>env &rarr; config &rarr; prompt order tested for each provider &times; each source state<br><span class="pill">Rules 2, 11</span></td>
+            </tr>
+            <tr>
+              <td><strong>Gate 13</strong></td>
+              <td>Registration-Invocation Pairing</td>
+              <td><code>{"blitzy", "mistral", "anthropic"}</code> set equality across argparse, factory, session records, config field suffixes<br><span class="pill">Rule 13</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <!-- =================================================================
+           SLIDE 16 — Closing. Navy background; three-bullet next-steps;
+           brand lockup with gradient-text mark; boundary footer.
+           ================================================================= -->
+      <section class="slide-closing">
+        <p class="eyebrow">Next Steps</p>
+        <h2>Ship the prompt. Ship the backend. Ship the picker.</h2>
+        <ol class="closing-list">
+          <li>Run <code>uv run pytest tests/ --cov-fail-under=80</code> and the lint gates (<code>ruff check</code>, <code>ruff format --check</code>)</li>
+          <li>Demo the three startup paths: default (prompt), <code>--provider blitzy|mistral|anthropic</code>, and <code>--resume</code> session picker</li>
+          <li>Mount the dashboard from <code>docs/observability/dashboard.json</code> and confirm <code>KEY_MASK_FILTER</code> in the live logs</li>
+        </ol>
+        <div class="brand-lockup">
+          <span class="lockup-mark">BLITZY</span>
+          <span class="lockup-sub">Agent &middot; v0.1.0</span>
+        </div>
+        <p class="closing-footer">Boundaries: vibe/core/llm/ &middot; vibe/core/ &middot; vibe/cli/ &middot; pyproject.toml</p>
+      </section>
+
+    </div>
+  </div>
+
+  <!-- =====================================================================
+       External scripts (pinned CDN). reveal.js 5.1.0, Mermaid 11.4.0,
+       Lucide 0.460.0. Order matters: reveal.js first, then renderers.
+       ===================================================================== -->
+  <script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.0/dist/mermaid.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/lucide@0.460.0/dist/umd/lucide.min.js"></script>
+
+  <script>
+    // ====================================================================
+    // 1) Mermaid configuration. startOnLoad MUST be false so we control
+    //    rendering inside reveal.js lifecycle events. Brand-aligned theme
+    //    variables apply Blitzy purples/teal across all diagrams.
+    // ====================================================================
+    mermaid.initialize({
+      startOnLoad: false,
+      theme: 'base',
+      themeVariables: {
+        fontFamily: "'Space Grotesk','Inter',sans-serif",
+        primaryColor: '#2D1C77',
+        primaryTextColor: '#FFFFFF',
+        primaryBorderColor: '#7A6DEC',
+        lineColor: '#94FAD5',
+        secondaryColor: '#1A105F',
+        tertiaryColor: '#08051A',
+        background: 'transparent',
+        mainBkg: '#2D1C77',
+        nodeBorder: '#7A6DEC',
+        clusterBkg: '#1A105F',
+        edgeLabelBackground: '#1A105F',
+        textColor: '#FFFFFF'
+      },
+      securityLevel: 'loose',
+      flowchart: { htmlLabels: true, curve: 'basis' }
+    });
+
+    // Snapshot every Mermaid source BEFORE reveal.js or mermaid.run can
+    // mutate the DOM. The lazy-render path below restores these sources
+    // when a previous render produced a degenerate SVG (e.g., because the
+    // slide was hidden at first render time).
+    var mermaidSources = new WeakMap();
+    document.querySelectorAll('pre.mermaid').forEach(function (el) {
+      mermaidSources.set(el, el.textContent);
+    });
+
+    // ====================================================================
+    // 2) Reveal.js configuration. Verbatim per AAP section 0.8.3:
+    //    hash navigation, slide transition, no controls tutorial,
+    //    1920x1080 logical resolution (16:9). slideNumber 'c/t' renders
+    //    "current/total" in the mono font defined by .reveal .slide-number.
+    // ====================================================================
+    Reveal.initialize({
+      hash: true,
+      transition: 'slide',
+      controlsTutorial: false,
+      width: 1920,
+      height: 1080,
+      slideNumber: 'c/t',
+      margin: 0.04,
+      minScale: 0.2,
+      maxScale: 2.0
+    });
+
+    // ====================================================================
+    // 3) Lazy Mermaid rendering keyed off the *visible* slide.
+    //
+    //    The naive pattern of calling mermaid.run() across every
+    //    pre.mermaid on `ready` fails because reveal.js hides non-current
+    //    slides with `display: none`. Mermaid measures zero parent width
+    //    on hidden slides and emits an SVG with a degenerate
+    //    viewBox="-8 -8 16 16" / max-width: 16px. The slide then looks
+    //    blank when navigated to, and the `data-processed="true"` marker
+    //    prevents any re-render on `slidechanged`.
+    //
+    //    The robust fix is to (a) snapshot the original Mermaid source
+    //    text for every pre.mermaid BEFORE any rendering (done above
+    //    immediately after mermaid.initialize), then (b) render each
+    //    diagram lazily when its slide becomes active, restoring the
+    //    source first if a previous render produced a degenerate SVG.
+    // ====================================================================
+    function isDegenerateMermaidSvg(svg) {
+      if (!svg) return true;
+      var rect = svg.getBoundingClientRect();
+      // A correctly rendered diagram will have width and height in the
+      // hundreds of pixels at the slide's logical 1920x1080 scale.
+      // Treat anything < 60px in either dimension as a failed render.
+      return rect.width < 60 || rect.height < 60;
+    }
+
+    function renderVisuals() {
+      var current = Reveal.getCurrentSlide();
+      if (!current) return;
+
+      try {
+        var blocks = current.querySelectorAll('pre.mermaid');
+        var toRender = [];
+        blocks.forEach(function (block) {
+          if (block.getAttribute('data-processed') === 'true') {
+            var svg = block.querySelector('svg');
+            if (isDegenerateMermaidSvg(svg)) {
+              // Restore the original source text so mermaid.run() has
+              // valid input again, then queue for re-rendering.
+              var src = mermaidSources.get(block);
+              if (src) {
+                block.innerHTML = '';
+                block.textContent = src;
+                block.removeAttribute('data-processed');
+                toRender.push(block);
+              }
+            }
+          } else {
+            toRender.push(block);
+          }
+        });
+        if (toRender.length > 0) {
+          mermaid.run({ nodes: toRender });
+        }
+      } catch (e) {
+        console.warn('mermaid.run failed', e);
+      }
+
+      try {
+        lucide.createIcons();
+      } catch (e) {
+        console.warn('lucide.createIcons failed', e);
+      }
+    }
+
+    Reveal.on('ready', renderVisuals);
+    Reveal.on('slidechanged', renderVisuals);
+  </script>
+</body>
+</html>
+
