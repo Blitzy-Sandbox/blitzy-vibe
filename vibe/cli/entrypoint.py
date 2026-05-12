@@ -141,8 +141,30 @@ def parse_arguments() -> argparse.Namespace:
     )
     continuation_group.add_argument(
         "--resume",
-        metavar="SESSION_ID",
-        help="Resume a specific session by its ID (supports partial matching)",
+        action="store_true",
+        help="Resume a previous session via the interactive session picker "
+        "(scoped to the current repository and branch).",
+    )
+
+    # AAP Capability A (rule 13): the `--provider` flag is OUTSIDE the
+    # mutually-exclusive `-c/--continue`/`--resume` group because it is
+    # compatible with both -- when --resume is paired with --provider and the
+    # session picker yields an empty list, the entrypoint orchestration block
+    # falls through to provider selection and consumes `args.provider` to
+    # bypass the interactive picker. ``type=str.lower`` normalizes the input
+    # BEFORE argparse validates against ``choices``, so ``--provider BLITZY``
+    # is accepted and stored as ``"blitzy"`` (the canonical lowercase token
+    # that matches ``Backend.<X>.value`` and ``provider_string_to_backend``'s
+    # key set -- AAP rule 13 single source of truth). ``default=None``
+    # allows the orchestration block to unambiguously distinguish "not set"
+    # from "explicitly chosen".
+    parser.add_argument(
+        "--provider",
+        type=str.lower,
+        choices=["blitzy", "mistral", "anthropic"],
+        default=None,
+        help="Skip the interactive provider prompt by specifying the LLM provider "
+        "(case-insensitive). Mutually consistent with --resume's restored provider.",
     )
 
     parser.add_argument(
@@ -232,9 +254,86 @@ def main() -> None:
         check_and_resolve_trusted_folder()
     unlock_config_paths()
 
+    # --- AAP Capability A + C: provider/session selection (rules 4, 5, 13) ---
+    # MUST happen BEFORE any backend constructor is called (rule 4).  The
+    # entrypoint resolves a ``Backend`` enum value and (optionally) a
+    # ``SessionRecord``; ``run_cli`` consumes both as keyword arguments and
+    # is the sole site that instantiates the backend via
+    # :data:`vibe.core.llm.backend.factory.BACKEND_FACTORY`.
+    #
+    # Variable scope: ``restored_session`` and ``backend_enum`` are declared
+    # OUTSIDE the ``if not args.setup:`` block so they remain defined (as
+    # ``None``) when ``--setup`` is passed.  This avoids ``UnboundLocalError``
+    # at the ``run_cli(args, backend=...)`` call site.  ``--setup`` skips
+    # both pickers because ``run_cli`` calls ``run_onboarding()`` and exits
+    # before any backend logic runs (see ``vibe/cli/cli.py`` setup branch).
+    #
+    # The ``from __future__ import annotations`` directive at the top of
+    # this module makes all type annotations strings at runtime, so the
+    # ``SessionRecord | None`` / ``Backend | None`` annotations below do not
+    # require the runtime types to be imported eagerly -- only the runtime
+    # references inside the ``if not args.setup:`` block actually evaluate
+    # the names ``SessionRecord`` and ``Backend``.
+    restored_session: SessionRecord | None = None
+    backend_enum: Backend | None = None
+
+    if not args.setup:
+        # Lazy imports: deferred to ``main()`` so that subcommand dispatches
+        # (``bootstrap``, ``skills``) that ``sys.exit(0)`` earlier in this
+        # function pay zero import cost for the LLM/session machinery, and
+        # so that any future circular-import risk via the CLI module graph
+        # is contained to this single function.
+        from vibe.cli.provider_picker import select_provider
+        from vibe.cli.session_picker import select_session
+        from vibe.core.config import Backend
+        from vibe.core.git_context import detect as detect_git_context
+        from vibe.core.llm.backend.factory import provider_string_to_backend
+        from vibe.core.session import SessionRecord
+
+        if args.resume:
+            # Rule 5: ``--resume`` opens the interactive session picker
+            # scoped to the current ``(repo, branch)``.  ``detect_git_context``
+            # NEVER raises (rule 3 silent-failure contract): an absent or
+            # unreadable ``.git`` directory yields ``("", "")``, which the
+            # session manager maps to the ``_unknown/_unknown`` storage path.
+            repo, branch = detect_git_context()
+            try:
+                restored_session, backend_enum = select_session(repo, branch)
+            except (KeyboardInterrupt, EOFError):
+                # Both pickers convert Ctrl-D/EOF to ``KeyboardInterrupt``
+                # internally, but defensive ``EOFError`` catch costs nothing
+                # and protects against any future picker refactor.  The
+                # ``"\n[dim]Bye![/]"`` greeting matches the existing exit
+                # pattern in ``run_cli``'s outer ``except`` block for visual
+                # consistency.
+                rprint("\n[dim]Bye![/]")
+                sys.exit(0)
+            # Rule 5 fallthrough: when ``select_session`` returns
+            # ``(None, None)`` (the empty-list sentinel), ``backend_enum`` is
+            # ``None`` and execution proceeds to the provider-selection
+            # branch below WITHOUT exiting.
+
+        if backend_enum is None:
+            # Covers two cases uniformly:
+            #   1. ``--resume`` was NOT passed (skipped session selection).
+            #   2. ``--resume`` was passed but the session list was empty
+            #      (rule 5 fallthrough).
+            # In both, ``--provider`` (if set) wins over the interactive
+            # picker.  ``provider_string_to_backend`` is the canonical
+            # rule-13 mapper -- its key set is the SINGLE source of truth
+            # for the ``{"blitzy", "mistral", "anthropic"}`` token universe.
+            if args.provider:
+                backend_enum = provider_string_to_backend(args.provider)
+            else:
+                try:
+                    backend_enum = select_provider()
+                except (KeyboardInterrupt, EOFError):
+                    rprint("\n[dim]Bye![/]")
+                    sys.exit(0)
+
     from vibe.cli.cli import run_cli
 
-    run_cli(args)
+    run_cli(args, backend=backend_enum, restored_session=restored_session)
 
 
 if __name__ == "__main__":
