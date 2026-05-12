@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Callable
 from datetime import datetime, timedelta
 from pathlib import Path
 import signal
@@ -25,14 +26,21 @@ from vibe.cli.textual_ui.app import run_textual_ui
 from vibe.core.agent_loop import AgentLoop
 from vibe.core.agents.models import BuiltinAgentName
 from vibe.core.config import (
+    Backend,
     MissingAPIKeyError,
     MissingPromptFileError,
     VibeConfig,
     load_dotenv_values,
 )
+from vibe.core.git_context import detect as detect_git_context
+from vibe.core.middleware import AutoCompactMiddleware
+from vibe.core.observability import set_correlation_id
 from vibe.core.paths.config_paths import CONFIG_FILE, HISTORY_FILE
 from vibe.core.programmatic import run_programmatic
-from vibe.core.session.session_loader import SessionLoader
+from vibe.core.session import SessionManager, SessionRecord, new_session
+from vibe.core.session.session_loader import (  # pyright: ignore[reportMissingImports]
+    SessionLoader,
+)
 from vibe.core.types import LLMMessage, OutputFormat, Role
 from vibe.core.utils import ConversationLimitException, logger
 from vibe.setup.onboarding import run_onboarding
@@ -254,23 +262,122 @@ def _load_messages_from_previous_session(
     logger.info("Loaded %d messages from previous session", len(non_system_messages))
 
 
-def run_cli(args: argparse.Namespace) -> None:
+def _build_session_record(
+    backend: Backend | None, restored_session: SessionRecord | None
+) -> SessionRecord:
+    """Build the SessionRecord for this run (AAP Capability C).
+
+    Resolves (repo, branch) via the pure-Python git context detector (AAP
+    rule 3: never raises). Restored session's (repo, branch) take precedence
+    to preserve continuity when the user has switched branches between
+    sessions. Returns a fresh SessionRecord with a UUID4 hex session_id
+    when restored_session is None.
+    """
+    cwd_repo, cwd_branch = detect_git_context()
+    if restored_session is not None:
+        return restored_session
+    # If backend is None (only possible in --setup mode, defensive), fall back
+    # to Backend.BLITZY for the provider field.
+    provider_value = backend.value if backend is not None else Backend.BLITZY.value
+    return new_session(provider=provider_value, repo=cwd_repo, branch=cwd_branch)
+
+
+def _resolve_loaded_messages(
+    args: argparse.Namespace, restored_session: SessionRecord | None, config: VibeConfig
+) -> list[LLMMessage] | None:
+    """Resolve which message history (if any) to hydrate into the AgentLoop.
+
+    Preference order:
+    1. When ``restored_session`` is provided (via the --resume picker at the
+       entrypoint), use its messages (system messages dropped — re-added by
+       AgentLoop construction).
+    2. When ``args.continue_session`` is True (the legacy -c/--continue flag),
+       fall back to the legacy session subsystem via :func:`load_session`.
+    3. Otherwise, return None (fresh conversation).
+    """
+    if restored_session is not None:
+        return [m for m in restored_session.messages if m.role != Role.system]
+    if args.continue_session:
+        return load_session(args, config)
+    return None
+
+
+def _install_provider_aware_compact(
+    agent_loop: AgentLoop, backend: Backend | None, config: VibeConfig
+) -> None:
+    """Replace the legacy AutoCompactMiddleware with the provider-aware form.
+
+    Per AAP rule 11, the auto-compact threshold for the user-selectable
+    providers (Blitzy, Mistral, Anthropic) MUST be derived from the
+    configurable context limits at 80% of the active provider's limit. The
+    legacy ``AutoCompactMiddleware(threshold)`` instance added by
+    ``AgentLoop._setup_middleware`` is replaced in place; other middleware
+    (TurnLimit, PriceLimit, ContextWarning, PlanAgent) is preserved.
+    """
+    if backend is None or backend.value not in {"blitzy", "mistral", "anthropic"}:
+        return
+    new_compact = AutoCompactMiddleware(
+        provider=backend, context_limits=config.context_limits
+    )
+    for i, mw in enumerate(agent_loop.middleware_pipeline.middlewares):
+        if isinstance(mw, AutoCompactMiddleware):
+            agent_loop.middleware_pipeline.middlewares[i] = new_compact
+            break
+
+
+def _maybe_run_auto_bootstrap(args: argparse.Namespace) -> str | None:
+    """Run automatic environment bootstrap when applicable, returning status.
+
+    Returns the human-readable bootstrap status (used by the TUI) or None
+    when no bootstrap step ran. The decision rules are unchanged from the
+    inline form: bootstrap runs only when an ``archie-bootstrap`` script (or
+    Makefile target) is present and ``--skip-auto-bootstrap`` is not set.
+    """
+    if not _has_archie_bootstrap() or getattr(args, "skip_auto_bootstrap", False):
+        return None
+
+    force_bootstrap = getattr(args, "force_bootstrap", False)
+    if force_bootstrap or _is_bootstrap_stale():
+        console.print("[dim]Preparing environment...[/]")
+        if run_auto_bootstrap():
+            return "✓ Environment ready"
+        return "⚠ Environment setup incomplete"
+    return "✓ Using cached environment"
+
+
+def _make_message_observer(
+    session_record: SessionRecord, session_manager: SessionManager
+) -> Callable[[LLMMessage], None]:
+    """Build the per-turn save callback wired into AgentLoop.message_observer.
+
+    AgentLoop invokes the callback for every new message appended to history.
+    We mirror the message into the SessionRecord and full-overwrite the JSON
+    file (AAP rule 6 — save after every turn).
+    """
+
+    def _on_message_added(msg: LLMMessage) -> None:
+        session_record.messages.append(msg)
+        try:
+            session_manager.save(session_record)
+        except OSError as exc:
+            # Saving must not crash the user-facing loop; log and continue.
+            logger.warning(
+                "Failed to save session %s: %s", session_record.session_id, exc
+            )
+
+    return _on_message_added
+
+
+def run_cli(
+    args: argparse.Namespace,
+    backend: Backend | None = None,
+    restored_session: SessionRecord | None = None,
+) -> None:
     load_dotenv_values()
     bootstrap_config_files()
 
-    # Auto-bootstrap check
-    bootstrap_status = None
-    if _has_archie_bootstrap() and not getattr(args, "skip_auto_bootstrap", False):
-        force_bootstrap = getattr(args, "force_bootstrap", False)
-
-        if force_bootstrap or _is_bootstrap_stale():
-            console.print("[dim]Preparing environment...[/]")
-            if run_auto_bootstrap():
-                bootstrap_status = "✓ Environment ready"
-            else:
-                bootstrap_status = "⚠ Environment setup incomplete"
-        else:
-            bootstrap_status = "✓ Using cached environment"
+    # Auto-bootstrap check (logic preserved; extracted to helper for clarity).
+    bootstrap_status = _maybe_run_auto_bootstrap(args)
 
     if args.setup:
         run_onboarding()
@@ -280,10 +387,17 @@ def run_cli(args: argparse.Namespace) -> None:
         initial_agent_name = get_initial_agent_name(args)
         config = load_config_or_exit()
 
+        # --- AAP Capability C: Session persistence wiring (rules 2, 3, 6) ---
+        session_record = _build_session_record(backend, restored_session)
+        # Bind the per-session correlation ID for structured logging (rule 2).
+        set_correlation_id(session_record.session_id)
+        # Saves are full-overwrite per turn (rule 6).
+        session_manager = SessionManager()
+
         if args.enabled_tools:
             config.enabled_tools = args.enabled_tools
 
-        loaded_messages = load_session(args, config)
+        loaded_messages = _resolve_loaded_messages(args, restored_session, config)
 
         stdin_prompt = get_prompt_from_stdin()
         if args.prompt is not None:
@@ -320,9 +434,17 @@ def run_cli(args: argparse.Namespace) -> None:
                 print(f"Error: {e}", file=sys.stderr)
                 sys.exit(1)
         else:
+            # AAP rule 6 — per-turn save hook via AgentLoop.message_observer.
+            on_message_added = _make_message_observer(session_record, session_manager)
             agent_loop = AgentLoop(
-                config, agent_name=initial_agent_name, enable_streaming=True
+                config,
+                agent_name=initial_agent_name,
+                message_observer=on_message_added,
+                enable_streaming=True,
             )
+
+            # AAP rule 11 — provider-aware AutoCompactMiddleware (80% threshold).
+            _install_provider_aware_compact(agent_loop, backend, config)
 
             if loaded_messages:
                 _load_messages_from_previous_session(agent_loop, loaded_messages)
