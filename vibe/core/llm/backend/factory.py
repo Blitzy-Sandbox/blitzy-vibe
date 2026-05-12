@@ -16,6 +16,15 @@ BACKEND_FACTORY = {
 }
 
 
+# NOTE: ``Backend.GENERIC`` and ``Backend.CLAUDE_CODE`` are intentionally
+# EXCLUDED from this map. They remain in ``BACKEND_FACTORY`` above for
+# internal/programmatic use (e.g., custom OpenAI-compatible endpoints, the
+# Claude Code CLI proxy), but they are NOT user-selectable via the
+# ``--provider`` CLI flag. AAP rule 13 mandates the user-facing provider
+# string set is the SINGLE source of truth and MUST be exactly
+# ``{"blitzy", "mistral", "anthropic"}``; admitting GENERIC or CLAUDE_CODE
+# here would silently broaden that surface and break Gate 13's
+# Registration-Invocation Pairing invariant.
 _PROVIDER_STRING_TO_BACKEND: dict[str, Backend] = {
     "blitzy": Backend.BLITZY,
     "mistral": Backend.MISTRAL,
