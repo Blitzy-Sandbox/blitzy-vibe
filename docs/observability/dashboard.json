@@ -1,0 +1,55 @@
+{
+  "title": "Blitzy Agent Session Observability",
+  "version": "1.0.0",
+  "description": "Dashboard template describing log queries, metric panels, and trace views for monitoring a Blitzy Agent CLI session.",
+  "log_queries": [
+    {
+      "name": "Per-session correlation",
+      "description": "Group log records by correlation_id to follow a single session end-to-end.",
+      "query": "logger:\"vibe.*\" | groupby correlation_id",
+      "expected_fields": ["ts", "level", "logger", "msg", "correlation_id", "span", "attrs"]
+    },
+    {
+      "name": "Error rate by provider",
+      "description": "Count error-level records partitioned by the active provider for the session.",
+      "query": "level:ERROR | groupby attrs.provider | count",
+      "expected_fields": ["attrs.provider"]
+    },
+    {
+      "name": "API key mask violation counter",
+      "description": "Sentinel query that should always return zero — alerts if a sensitive value bypasses the KEY_MASK_FILTER.",
+      "query": "msg:~\"sk-\" OR msg:~\"BLITZY_API_KEY=\" OR msg:~\"ANTHROPIC_API_KEY=\" OR msg:~\"MISTRAL_API_KEY=\"",
+      "alert_threshold": 0
+    }
+  ],
+  "metric_panels": [
+    {
+      "name": "Turns per minute",
+      "metric": "turns_completed",
+      "aggregation": "rate(1m)"
+    },
+    {
+      "name": "Compaction count",
+      "metric": "compactions_triggered",
+      "aggregation": "sum"
+    },
+    {
+      "name": "P99 LLM latency by provider",
+      "metric": "span.llm.complete.duration_ms",
+      "aggregation": "p99",
+      "group_by": ["attrs.provider"],
+      "description": "Histogram of llm.complete span durations. Uses the 'span.' namespace prefix emitted by vibe/core/observability.py:_record_histogram (f'span.{name}.duration_ms')."
+    }
+  ],
+  "trace_views": [
+    {
+      "name": "Span breakdown per session",
+      "span_names": ["provider.connect", "llm.complete", "session.save", "session.compact"],
+      "group_by": "correlation_id"
+    }
+  ],
+  "health_summary": {
+    "description": "Readiness check exposed by vibe/core/observability.py:is_ready() — returns True after backend __aenter__ completes successfully.",
+    "states": ["initializing", "ready", "degraded", "failed"]
+  }
+}

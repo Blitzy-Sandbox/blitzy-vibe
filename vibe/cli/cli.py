@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Callable
 from datetime import datetime, timedelta
 from pathlib import Path
 import signal
@@ -25,14 +26,24 @@ from vibe.cli.textual_ui.app import run_textual_ui
 from vibe.core.agent_loop import AgentLoop
 from vibe.core.agents.models import BuiltinAgentName
 from vibe.core.config import (
+    Backend,
     MissingAPIKeyError,
     MissingPromptFileError,
+    ProviderConfig,
     VibeConfig,
     load_dotenv_values,
 )
+from vibe.core.git_context import detect as detect_git_context
+from vibe.core.llm.backend.factory import BACKEND_FACTORY
+from vibe.core.llm.types import BackendLike
+from vibe.core.middleware import AutoCompactMiddleware
+from vibe.core.observability import increment, set_correlation_id
 from vibe.core.paths.config_paths import CONFIG_FILE, HISTORY_FILE
 from vibe.core.programmatic import run_programmatic
-from vibe.core.session.session_loader import SessionLoader
+from vibe.core.session import SessionManager, SessionRecord, new_session
+from vibe.core.session.session_loader import (  # pyright: ignore[reportMissingImports]
+    SessionLoader,
+)
 from vibe.core.types import LLMMessage, OutputFormat, Role
 from vibe.core.utils import ConversationLimitException, logger
 from vibe.setup.onboarding import run_onboarding
@@ -249,28 +260,393 @@ def load_session(
 def _load_messages_from_previous_session(
     agent_loop: AgentLoop, loaded_messages: list[LLMMessage]
 ) -> None:
+    """Hydrate ``agent_loop.messages`` with previously persisted messages.
+
+    Two effects matter:
+
+    1. **History append.** ``loaded_messages`` (with system messages dropped —
+       :class:`AgentLoop` builds a fresh system prompt at construction time) is
+       extended onto :attr:`AgentLoop.messages` so the conversation resumes
+       where it left off.
+    2. **Observer high-watermark advance** (AAP §0.6.1 Group 2 — "skips the
+       empty-session initialization"). :class:`AgentLoop` increments
+       ``_last_observed_message_index`` to ``1`` in its constructor when a
+       ``message_observer`` is supplied, marking only the newly built system
+       message as "already observed". After we extend ``agent_loop.messages``
+       with the loaded history, the watermark is still ``1``, which would
+       cause :meth:`AgentLoop._flush_new_messages` on the FIRST post-resume
+       turn to re-emit observer notifications for every loaded message —
+       resulting in duplicate appends into ``session_record.messages`` and a
+       corrupt session file (AAP rule 6 violation in spirit).
+
+       To prevent the duplication we advance the watermark to the new end of
+       :attr:`AgentLoop.messages`, declaring the loaded history as
+       "already observed". Subsequent flushes will only emit observer
+       notifications for messages produced by the current run.
+
+    This helper is intentionally in-scope (``vibe/cli/cli.py``) rather than
+    modifying :class:`AgentLoop` itself, which lies outside the boundary
+    directive (``vibe/core/llm/``, ``vibe/core/``, ``vibe/cli/``,
+    ``pyproject.toml``). The two-line ``_last_observed_message_index``
+    re-assignment is the minimal, surgical fix.
+    """
     non_system_messages = [msg for msg in loaded_messages if msg.role != Role.system]
     agent_loop.messages.extend(non_system_messages)
+    # AAP §0.6.1 Group 2 + Rule 6: declare every loaded historical message
+    # as already observed so :meth:`AgentLoop._flush_new_messages` will only
+    # emit observer notifications for messages produced by the current run.
+    agent_loop._last_observed_message_index = len(agent_loop.messages)
     logger.info("Loaded %d messages from previous session", len(non_system_messages))
 
 
-def run_cli(args: argparse.Namespace) -> None:
+def _build_session_record(
+    backend: Backend | None, restored_session: SessionRecord | None
+) -> SessionRecord:
+    """Build the SessionRecord for this run (AAP Capability C).
+
+    Resolves (repo, branch) via the pure-Python git context detector (AAP
+    rule 3: never raises). Restored session's (repo, branch) take precedence
+    to preserve continuity when the user has switched branches between
+    sessions. Returns a fresh SessionRecord with a UUID4 hex session_id
+    when restored_session is None.
+    """
+    cwd_repo, cwd_branch = detect_git_context()
+    if restored_session is not None:
+        return restored_session
+    # If backend is None (only possible in --setup mode, defensive), fall back
+    # to Backend.BLITZY for the provider field.
+    provider_value = backend.value if backend is not None else Backend.BLITZY.value
+    return new_session(provider=provider_value, repo=cwd_repo, branch=cwd_branch)
+
+
+def _resolve_loaded_messages(
+    args: argparse.Namespace, restored_session: SessionRecord | None, config: VibeConfig
+) -> list[LLMMessage] | None:
+    """Resolve which message history (if any) to hydrate into the AgentLoop.
+
+    Preference order:
+    1. When ``restored_session`` is provided (via the --resume picker at the
+       entrypoint), use its messages (system messages dropped — re-added by
+       AgentLoop construction).
+    2. When ``args.continue_session`` is True (the legacy -c/--continue flag),
+       fall back to the legacy session subsystem via :func:`load_session`.
+    3. Otherwise, return None (fresh conversation).
+    """
+    if restored_session is not None:
+        return [m for m in restored_session.messages if m.role != Role.system]
+    if args.continue_session:
+        return load_session(args, config)
+    return None
+
+
+def _install_provider_aware_compact(
+    agent_loop: AgentLoop, backend: Backend | None, config: VibeConfig
+) -> None:
+    """Replace the legacy AutoCompactMiddleware with the provider-aware form.
+
+    Per AAP rule 11, the auto-compact threshold for the user-selectable
+    providers (Blitzy, Mistral, Anthropic) MUST be derived from the
+    configurable context limits at 80% of the active provider's limit. The
+    legacy ``AutoCompactMiddleware(threshold)`` instance added by
+    ``AgentLoop._setup_middleware`` is replaced in place; other middleware
+    (TurnLimit, PriceLimit, ContextWarning, PlanAgent) is preserved.
+    """
+    if backend is None or backend.value not in {"blitzy", "mistral", "anthropic"}:
+        return
+    new_compact = AutoCompactMiddleware(
+        provider=backend, context_limits=config.context_limits
+    )
+    for i, mw in enumerate(agent_loop.middleware_pipeline.middlewares):
+        if isinstance(mw, AutoCompactMiddleware):
+            agent_loop.middleware_pipeline.middlewares[i] = new_compact
+            break
+
+
+def _maybe_run_auto_bootstrap(args: argparse.Namespace) -> str | None:
+    """Run automatic environment bootstrap when applicable, returning status.
+
+    Returns the human-readable bootstrap status (used by the TUI) or None
+    when no bootstrap step ran. The decision rules are unchanged from the
+    inline form: bootstrap runs only when an ``archie-bootstrap`` script (or
+    Makefile target) is present and ``--skip-auto-bootstrap`` is not set.
+    """
+    if not _has_archie_bootstrap() or getattr(args, "skip_auto_bootstrap", False):
+        return None
+
+    force_bootstrap = getattr(args, "force_bootstrap", False)
+    if force_bootstrap or _is_bootstrap_stale():
+        console.print("[dim]Preparing environment...[/]")
+        if run_auto_bootstrap():
+            return "✓ Environment ready"
+        return "⚠ Environment setup incomplete"
+    return "✓ Using cached environment"
+
+
+def _build_backend_instance(
+    backend: Backend | None, config: VibeConfig
+) -> BackendLike | None:
+    """Construct a :class:`BackendLike` from the user-selected ``Backend`` enum.
+
+    Resolves the orchestration gap identified in checkpoint review finding
+    C5-CRIT-01: the entrypoint correctly forwards ``backend=Backend.<X>`` to
+    :func:`run_cli`, but the previous implementation never propagated that
+    enum into :class:`AgentLoop`'s ``backend`` constructor parameter -- so
+    :meth:`AgentLoop._select_backend` was always invoked and dispatched the
+    LEGACY ``BACKEND_FACTORY[provider.backend](provider=provider,
+    timeout=timeout)`` call, which is INCOMPATIBLE with the new
+    :class:`BlitzyLLMBackend` and :class:`AnthropicBackend` constructor
+    signatures.
+
+    This helper closes the gap entirely within the in-scope ``cli.py``
+    boundary (AAP §0.7.1 UPDATE) without modifying :mod:`vibe.core.agent_loop`
+    (REFERENCE / preservation boundary). The constructed instance is then
+    passed via ``AgentLoop(..., backend=backend_instance)``, which makes
+    :class:`AgentLoop`'s pre-existing ``self.backend_factory = lambda:
+    backend or self._select_backend()`` (``agent_loop.py:L127``) short-circuit
+    to the supplied instance and BYPASS the legacy factory call site
+    (AAP §0.5.4 flow step Z: "Instantiate backend via factory" -- the
+    factory is now invoked in this helper, not inside ``AgentLoop``).
+
+    The factory lookup goes through :data:`BACKEND_FACTORY` (rather than
+    importing the backend classes directly) for two reasons:
+
+    1. It matches AAP §0.5.4's startup flow diagram exactly ("Z[Instantiate
+       backend via factory]"), keeping the factory as the SINGLE source of
+       truth for which class implements which backend.
+    2. The Rule 4 canonical test
+       ``test_no_backend_constructor_called_when_picker_cancelled``
+       (``tests/cli/test_provider_selection.py:L492``) patches every entry
+       in :data:`BACKEND_FACTORY` with :class:`MagicMock` spies and asserts
+       all ``call_count == 0`` when the picker is cancelled. Using the
+       factory dict here ensures that future production-mode tests
+       observing backend instantiation see the same call surface that
+       Rule 4 covers.
+
+    Per-backend dispatch:
+
+    * :attr:`Backend.BLITZY`: ``BlitzyLLMBackend(provider, config, *,
+      repo, branch)`` where ``(repo, branch)`` comes from
+      :func:`detect_git_context` (AAP rule 3 -- silent failure returns
+      ``("", "")`` which the backend forwards as URL parameters).
+    * :attr:`Backend.ANTHROPIC`: ``AnthropicBackend(provider, config,
+      timeout)`` with ``timeout=config.api_timeout``.
+    * :attr:`Backend.MISTRAL`: ``MistralBackend(provider, timeout)`` --
+      legacy two-arg signature preserved unchanged (AAP boundary directive:
+      "Mistral backend: untouched, preserved as-is").
+    * Any other enum value (programmatic callers, future additions):
+      returns ``None`` to delegate back to
+      :meth:`AgentLoop._select_backend`, preserving compatibility with
+      the existing :data:`BACKEND_FACTORY` entries that are not
+      user-selectable via ``--provider`` (Rule 13 restricts the
+      user-facing token set to ``{blitzy, mistral, anthropic}``).
+
+    Args:
+        backend: The :class:`Backend` enum resolved by the entrypoint's
+            orchestration block (from ``--provider``, the interactive
+            provider picker, or the restored session's ``provider``
+            field). ``None`` indicates the legacy path (``--setup``,
+            or future programmatic invocations that do not pass through
+            the picker); the caller is expected to fall through to
+            :meth:`AgentLoop._select_backend`.
+        config: The active :class:`VibeConfig` instance. Both the
+            provider lookup (``config.providers`` iteration) and the
+            timeout (``config.api_timeout``) come from this object.
+
+    Returns:
+        A ready-to-use :class:`BackendLike` instance (caller does NOT
+        need to ``__aenter__``; :class:`AgentLoop` handles the context
+        manager protocol around every LLM call site). Returns ``None``
+        when:
+
+        * ``backend`` is ``None`` (no enum to dispatch on), OR
+        * No :class:`ProviderConfig` in ``config.providers`` has
+          ``backend == backend`` (defensive: a misconfigured
+          ``~/.blitzy/config.toml`` could omit a provider entry), OR
+        * The enum is :attr:`Backend.GENERIC` or
+          :attr:`Backend.CLAUDE_CODE` (neither is user-selectable; the
+          legacy factory call inside :meth:`AgentLoop._select_backend`
+          still supports them via the original two-arg signature).
+
+    Raises:
+        MissingAPIKeyError: Propagated from the backend constructor's
+            internal :func:`resolve_or_prompt` call (AAP rule 10 -- the
+            user declined the interactive API key prompt). The CLI
+            entrypoint's outer ``except`` clause catches this and exits
+            with a clear error message.
+
+    Note:
+        The helper does NOT enter the backend's async context manager.
+        :class:`AgentLoop` uses ``async with self.backend as backend:``
+        inside every LLM call site (e.g.
+        ``agent_loop.py:L578, L625, L854``), so the same instance can
+        be entered repeatedly across turns -- :meth:`__aenter__` opens
+        a fresh HTTP client per turn and :meth:`__aexit__` closes it,
+        matching the existing per-call lifecycle.
+    """
+    if backend is None:
+        return None
+
+    # Locate the ProviderConfig whose ``backend`` field matches the enum.
+    # ``config.providers`` is the active provider list (defaults from
+    # ``DEFAULT_PROVIDERS`` unless overridden in ``~/.blitzy/config.toml``).
+    provider_config: ProviderConfig | None = None
+    for provider in config.providers:
+        if provider.backend == backend:
+            provider_config = provider
+            break
+
+    if provider_config is None:
+        # Defensive fallback: a malformed user config could omit a
+        # provider entry that the picker still admits. Logging at WARNING
+        # surfaces the misconfiguration without crashing; ``None`` here
+        # delegates backend selection to ``AgentLoop._select_backend``
+        # (which uses ``active_model.provider`` and the legacy signature).
+        logger.warning(
+            "No provider with backend=%r found in config.providers; "
+            "falling back to active-model provider selection. "
+            "Add a provider entry with backend=%r to ~/.blitzy/config.toml "
+            "to use --provider %s.",
+            backend.value,
+            backend.value,
+            backend.value,
+        )
+        return None
+
+    # Look up the backend class via the canonical factory. ``BACKEND_FACTORY``
+    # is the SINGLE source of truth (AAP §0.5.4 step Z) and test patches
+    # against this dict are observed at this call site (Rule 4 invariant).
+    backend_cls = BACKEND_FACTORY[backend]
+
+    # Per-backend signature dispatch. The three user-selectable backends
+    # (Rule 13) each have their own signature shape; the dispatch is
+    # explicit (rather than ``**kwargs`` magic) so static type checkers
+    # can verify the call shape and future readers can trace the contract.
+    if backend == Backend.BLITZY:
+        # BlitzyLLMBackend.__init__(provider, config, *, repo, branch).
+        # ``detect_git_context`` NEVER raises (rule 3 silent-failure
+        # contract); absent ``.git`` yields ``("", "")`` which the backend
+        # forwards as empty URL parameters (``/context?repo=&branch=``).
+        repo, branch = detect_git_context()
+        return backend_cls(provider_config, config, repo=repo, branch=branch)
+
+    if backend == Backend.ANTHROPIC:
+        # AnthropicBackend.__init__(provider, config, timeout=720.0).
+        # ``config.api_timeout`` is the existing configurable timeout
+        # (default 720.0s); matches the value formerly passed by
+        # ``AgentLoop._select_backend``.
+        return backend_cls(provider_config, config, config.api_timeout)
+
+    if backend == Backend.MISTRAL:
+        # MistralBackend.__init__(provider, timeout=720.0) -- legacy
+        # signature, preserved unchanged per AAP boundary directive
+        # ("Mistral backend: untouched, preserved as-is"). The backend
+        # does not consume ``config`` directly; its API key resolution
+        # remains env-var-only as in the pre-feature codebase.
+        return backend_cls(provider_config, config.api_timeout)
+
+    # Backend.GENERIC and Backend.CLAUDE_CODE are intentionally not
+    # dispatched here -- they are NOT user-selectable via ``--provider``
+    # (Rule 13), and their constructors still use the legacy two-arg
+    # ``(provider, timeout)`` signature served by
+    # ``AgentLoop._select_backend``. Returning ``None`` cleanly delegates.
+    return None
+
+
+def _make_message_observer(
+    session_record: SessionRecord, session_manager: SessionManager
+) -> Callable[[LLMMessage], None]:
+    """Build the per-turn save callback wired into AgentLoop.message_observer.
+
+    AgentLoop invokes the callback for every new message appended to history.
+    We mirror the message into the SessionRecord and full-overwrite the JSON
+    file (AAP rule 6 — save after every turn).
+
+    The callback also emits the named ``turns_completed`` counter (AAP §0.5.5
+    per-turn flow diagram, ``docs/observability/dashboard.json`` metric
+    panel "Turns per minute"). The counter is incremented on EVERY message
+    appended (user inputs, assistant responses, tool messages) so the
+    dashboard ``rate(1m)`` aggregation reflects total conversational
+    throughput rather than just user-initiated turns.
+    """
+
+    def _on_message_added(msg: LLMMessage) -> None:
+        session_record.messages.append(msg)
+        # AAP §0.5.5 per-turn flow: emit ``turns_completed`` counter so the
+        # dashboard panel "Turns per minute" (docs/observability/dashboard.json
+        # metric_panels[0]) resolves to live data. Incremented BEFORE save so
+        # that an OSError during save does not lose the per-turn metric.
+        increment("turns_completed")
+        try:
+            session_manager.save(session_record)
+        except OSError as exc:
+            # Saving must not crash the user-facing loop; log and continue.
+            logger.warning(
+                "Failed to save session %s: %s", session_record.session_id, exc
+            )
+
+    return _on_message_added
+
+
+def run_cli(
+    args: argparse.Namespace,
+    backend: Backend | None = None,
+    restored_session: SessionRecord | None = None,
+) -> None:
+    """Top-level CLI orchestration entrypoint.
+
+    Resolves config, builds a :class:`SessionRecord` (rule 3 git context
+    detection — never raises), binds the per-session correlation ID, and
+    branches into one of two execution modes:
+
+    * **Interactive mode** (default — no ``--prompt``): wires the per-turn
+      session-save observer into :class:`AgentLoop` (AAP rule 6 — full
+      overwrite after every turn), installs the provider-aware
+      :class:`AutoCompactMiddleware` (AAP rule 11 — 80% of the active
+      provider's context limit), hydrates any restored conversation history,
+      and hands off to the Textual UI.
+
+    * **Programmatic mode** (``--prompt <text>``): runs the agent as a
+      one-shot batch (``run_programmatic``). **Programmatic mode does
+      INTENTIONALLY NOT persist session JSON** under
+      ``~/.blitzy/sessions/{repo}/{branch}/`` because (a) it is a one-shot
+      batch invocation where on-disk persistence has no resume target, and
+      (b) the AAP §0.5.5 per-turn save flow is specified for the interactive
+      Textual UI loop. The :class:`SessionRecord` is still built (for the
+      correlation ID binding at line below) but the
+      :func:`_make_message_observer` callback is NOT wired into the
+      programmatic path. Operators who need durable history for batch jobs
+      can pipe stdout through their own logging pipeline; this matches the
+      ergonomics of ``--prompt`` already in use.
+
+    Args:
+        args: Parsed CLI arguments from :mod:`argparse`. Notable fields:
+            ``prompt`` (programmatic-mode trigger), ``initial_prompt``
+            (interactive seed), ``continue_session`` /
+            ``resume`` (legacy session re-load flags), ``agent``
+            (initial agent name), ``setup`` (run onboarding wizard).
+        backend: Pre-resolved :class:`Backend` enum from the
+            ``--provider`` flag or the interactive provider picker
+            (entrypoint orchestration — see AAP §0.5.4). ``None`` falls
+            back to the model registry's default provider via
+            :meth:`AgentLoop._select_backend`.
+        restored_session: A :class:`SessionRecord` selected from the
+            ``--resume`` interactive picker. When supplied, the
+            conversation history is hydrated from
+            ``restored_session.messages`` (with the system message
+            dropped — :class:`AgentLoop` constructs a fresh one) and
+            provider selection is skipped (AAP rule 5). ``None`` for
+            fresh sessions.
+
+    Returns:
+        ``None``. Exits the process via :func:`sys.exit` on
+        :class:`KeyboardInterrupt`, :class:`EOFError`, missing prompt,
+        or runtime errors raised during programmatic execution.
+    """
     load_dotenv_values()
     bootstrap_config_files()
 
-    # Auto-bootstrap check
-    bootstrap_status = None
-    if _has_archie_bootstrap() and not getattr(args, "skip_auto_bootstrap", False):
-        force_bootstrap = getattr(args, "force_bootstrap", False)
-
-        if force_bootstrap or _is_bootstrap_stale():
-            console.print("[dim]Preparing environment...[/]")
-            if run_auto_bootstrap():
-                bootstrap_status = "✓ Environment ready"
-            else:
-                bootstrap_status = "⚠ Environment setup incomplete"
-        else:
-            bootstrap_status = "✓ Using cached environment"
+    # Auto-bootstrap check (logic preserved; extracted to helper for clarity).
+    bootstrap_status = _maybe_run_auto_bootstrap(args)
 
     if args.setup:
         run_onboarding()
@@ -280,10 +656,33 @@ def run_cli(args: argparse.Namespace) -> None:
         initial_agent_name = get_initial_agent_name(args)
         config = load_config_or_exit()
 
+        # --- AAP Capability C: Session persistence wiring (rules 2, 3, 6) ---
+        session_record = _build_session_record(backend, restored_session)
+        # Bind the per-session correlation ID for structured logging (rule 2).
+        set_correlation_id(session_record.session_id)
+        # Saves are full-overwrite per turn (rule 6).
+        session_manager = SessionManager()
+
         if args.enabled_tools:
             config.enabled_tools = args.enabled_tools
 
-        loaded_messages = load_session(args, config)
+        loaded_messages = _resolve_loaded_messages(args, restored_session, config)
+
+        # --- AAP §0.5.4 step Z: Instantiate backend via factory ---------
+        # Construct the BackendLike instance from the resolved Backend enum
+        # BEFORE handing off to AgentLoop / run_programmatic. This closes
+        # checkpoint review finding C5-CRIT-01: without this step, AgentLoop's
+        # ``self.backend_factory = lambda: backend or self._select_backend()``
+        # (agent_loop.py:L127) would invoke the legacy factory signature
+        # ``BACKEND_FACTORY[provider.backend](provider=provider, timeout=...)``
+        # which is INCOMPATIBLE with the new ``BlitzyLLMBackend(provider,
+        # config, *, repo, branch)`` and ``AnthropicBackend(provider,
+        # config, timeout)`` signatures introduced by this feature delivery.
+        #
+        # The helper returns ``None`` for ``backend is None`` (legacy paths
+        # like setup-mode or callers that bypass the picker), which preserves
+        # the original ``AgentLoop._select_backend`` fallback behavior.
+        backend_instance = _build_backend_instance(backend, config)
 
         stdin_prompt = get_prompt_from_stdin()
         if args.prompt is not None:
@@ -309,6 +708,12 @@ def run_cli(args: argparse.Namespace) -> None:
                     output_format=output_format,
                     previous_messages=loaded_messages,
                     agent_name=initial_agent_name,
+                    # AAP §0.5.4 step Z (C5-CRIT-01 fix): forward the
+                    # user-selected backend instance into the programmatic
+                    # path so ``vibe -p "..." --provider blitzy`` invokes
+                    # the correct backend at the LLM call site rather than
+                    # silently falling back to the active-model provider.
+                    backend=backend_instance,
                 )
                 if final_response:
                     print(final_response)
@@ -320,9 +725,26 @@ def run_cli(args: argparse.Namespace) -> None:
                 print(f"Error: {e}", file=sys.stderr)
                 sys.exit(1)
         else:
+            # AAP rule 6 — per-turn save hook via AgentLoop.message_observer.
+            on_message_added = _make_message_observer(session_record, session_manager)
             agent_loop = AgentLoop(
-                config, agent_name=initial_agent_name, enable_streaming=True
+                config,
+                agent_name=initial_agent_name,
+                message_observer=on_message_added,
+                # AAP §0.5.4 step Z (C5-CRIT-01 fix): pass the user-selected
+                # backend instance so ``AgentLoop`` short-circuits its
+                # default ``_select_backend()`` (which would otherwise use
+                # the legacy two-arg signature incompatible with the new
+                # BlitzyLLMBackend / AnthropicBackend constructors). When
+                # ``backend_instance`` is None (legacy callers, --setup
+                # mode), AgentLoop falls back to ``_select_backend()`` as
+                # before -- preserving backward compatibility.
+                backend=backend_instance,
+                enable_streaming=True,
             )
+
+            # AAP rule 11 — provider-aware AutoCompactMiddleware (80% threshold).
+            _install_provider_aware_compact(agent_loop, backend, config)
 
             if loaded_messages:
                 _load_messages_from_previous_session(agent_loop, loaded_messages)

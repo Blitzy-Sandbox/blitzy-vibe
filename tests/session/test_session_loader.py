@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 import json
+import os
 from pathlib import Path
 import time
 
@@ -10,6 +11,22 @@ import pytest
 from vibe.core.config import SessionLoggingConfig
 from vibe.core.session.session_loader import SessionLoader
 from vibe.core.types import LLMMessage, Role, ToolCall
+
+# DAC (discretionary access control) permission bits — and therefore
+# ``chmod(0)`` — are bypassed when the effective UID is 0 (root). Tests
+# that rely on a ``chmod(0)``-ed file being unreadable cannot exercise
+# the skip path while running as root (typical inside CI containers). We
+# attach this marker to the two affected tests; the underlying
+# production-code branch is still exercised by the non-root developer
+# environment and by CI runs that drop privileges.
+_skip_if_root = pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0,
+    reason=(
+        "chmod(0) does not deny read access to root; the unreadable-file "
+        "branch in SessionLoader.find_latest_session cannot be exercised "
+        "when the test process runs as UID 0."
+    ),
+)
 
 
 @pytest.fixture
@@ -251,6 +268,7 @@ class TestSessionLoaderFindLatestSession:
         assert result is not None
         assert result == valid_session
 
+    @_skip_if_root
     def test_find_latest_session_skips_unreadable_messages_file(
         self, session_config: SessionLoggingConfig, create_test_session
     ) -> None:
@@ -267,6 +285,7 @@ class TestSessionLoaderFindLatestSession:
         assert result is not None
         assert result == valid_session
 
+    @_skip_if_root
     def test_find_latest_session_skips_unreadable_metadata_file(
         self, session_config: SessionLoggingConfig, create_test_session
     ) -> None:

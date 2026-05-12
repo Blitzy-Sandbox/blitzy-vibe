@@ -14,9 +14,7 @@ from vibe.core.config import SessionLoggingConfig, VibeConfig
 def _no_bundled_skills(tmp_path: Path) -> Iterator[None]:
     """Prevent bundled skills from leaking into unit tests."""
     fake = tmp_path / "_no_bundled"
-    with patch(
-        "vibe.core.skills.manager.BUNDLED_SKILLS_DIR",
-    ) as mock_dir:
+    with patch("vibe.core.skills.manager.BUNDLED_SKILLS_DIR") as mock_dir:
         type(mock_dir).path = PropertyMock(return_value=fake)
         yield
 

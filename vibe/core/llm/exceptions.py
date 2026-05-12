@@ -193,3 +193,56 @@ class BackendErrorBuilder:
             has_tools=has_tools,
             tool_choice=tool_choice,
         )
+
+
+class BlitzyConnectionError(RuntimeError):
+    """Raised when the Blitzy context check or completion endpoint fails.
+
+    HTTP 404 on the context endpoint is NOT an error (per AAP rule 8) and MUST
+    NOT raise this. Only non-2xx-except-404 statuses and timeouts raise.
+
+    Fields:
+        repo: the repository name passed in the request.
+        branch: the branch name passed in the request.
+        status_code: HTTP status (or ``None`` on timeout / connect error).
+        url: the URL that failed.
+
+    NOTE: ``__str__`` MUST NOT include any API key (AAP rule 2). The fields
+    above do not contain key data, and the message string is constructed only
+    from ``repo``, ``branch``, ``status_code``, and ``url`` -- none of which
+    carry credentials. Implementations SHOULD avoid embedding raw response
+    headers or auth fragments into the message at construction time.
+    """
+
+    def __init__(
+        self, repo: str, branch: str, status_code: int | None, url: str
+    ) -> None:
+        self.repo = repo
+        self.branch = branch
+        self.status_code = status_code
+        self.url = url
+        status_label = (
+            f"HTTP {status_code}"
+            if status_code is not None
+            else "timeout/network error"
+        )
+        super().__init__(
+            f"Blitzy connection failed: {status_label} at {url} "
+            f"(repo={repo!r}, branch={branch!r})"
+        )
+
+
+class SessionNotFoundError(RuntimeError):
+    """Raised by ``SessionManager.load(session_id)`` when no file exists.
+
+    The interactive session picker path (``SessionManager.list_sessions``
+    followed by user selection) does NOT raise this -- it shows a
+    "No previous sessions found" message and falls through to provider
+    selection (AAP rule 5). This exception is for explicit
+    ``load(session_id)`` calls where the caller already has a specific
+    session ID in hand.
+    """
+
+    def __init__(self, session_id: str) -> None:
+        self.session_id = session_id
+        super().__init__(f"Session not found: {session_id}")

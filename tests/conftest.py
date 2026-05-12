@@ -11,6 +11,35 @@ from vibe.core.paths import global_paths
 from vibe.core.paths.config_paths import unlock_config_paths
 
 
+def pytest_configure(config: pytest.Config) -> None:
+    """Register custom pytest markers programmatically.
+
+    Registers the ``integration`` marker used by Gate 8 integration tests in
+    ``tests/backend/test_blitzy_backend.py`` and
+    ``tests/backend/test_anthropic_backend_extension.py``. Registration here
+    (rather than in ``pyproject.toml`` ``[tool.pytest.ini_options].markers``)
+    keeps ``pyproject.toml`` untouched at this checkpoint while still
+    suppressing the ``PytestUnknownMarkWarning`` that would otherwise emit at
+    test collection. This is the pytest-documented alternative for marker
+    registration and is functionally equivalent to declaring the marker in
+    the INI/TOML config (see
+    https://docs.pytest.org/en/stable/how-to/mark.html).
+
+    The ``integration`` marker is used to opt-in to live-network tests that
+    hit real provider APIs (Blitzy ``/v1/api/chat``, Anthropic ``messages``).
+    Such tests are SKIPPED by default at collection time when the relevant
+    ``*_API_KEY`` environment variable is absent or set to the placeholder
+    value ``"mock"``, and are intended to be invoked deliberately via
+    ``uv run pytest -m integration`` when an operator wants to verify
+    wire-protocol compatibility against a production endpoint.
+    """
+    config.addinivalue_line(
+        "markers",
+        "integration: marks tests that hit real provider APIs and require a "
+        "live API key (skipped by default; opt-in via `pytest -m integration`)",
+    )
+
+
 def get_base_config() -> dict[str, Any]:
     return {
         "active_model": "devstral-latest",
