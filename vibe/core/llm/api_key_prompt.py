@@ -226,3 +226,37 @@ def _save_key_to_config(field_name: str, value: str) -> None:
         # registered above. The next CLI invocation will simply re-prompt
         # the user -- correctness is preserved without leaking the secret.
         return
+
+    # Filesystem hardening (QA checkpoint #7 Issue #2): tighten the on-disk
+    # permission to ``0o600`` (owner read/write only). The default file mode
+    # produced by ``path.open("wb")`` honors the process umask -- typically
+    # ``0o022`` on Linux, yielding world-readable ``0o644``. A multi-user
+    # workstation, a containerized environment with multiple unprivileged
+    # users, or a shared developer box would otherwise expose the plain-text
+    # API key recorded above to every local user with stat access to
+    # ``~/.blitzy/``. Explicitly chmod'ing the file after the write closes
+    # this gap.
+    #
+    # The chmod is wrapped in a ``try / except OSError`` (and intentionally
+    # nothing else) for two reasons consistent with AAP rule 2:
+    #
+    # 1. Silent-on-error semantics. The function's contract is to never
+    #    raise on persistence failures because a re-raised error could carry
+    #    ``value`` (the API key) in a traceback frame down to some handler
+    #    that has not yet seen the masked value registered above. ``chmod``
+    #    failure modes (``ENOENT`` from a TOCTOU race that deleted the
+    #    file, ``EPERM`` on filesystems that disallow mode changes -- e.g.,
+    #    some FUSE mounts and Windows-mounted shares -- and ``ENOSYS`` on
+    #    chmod-unsupported filesystems) MUST NOT propagate.
+    # 2. Pass-through on success. When ``chmod`` succeeds, the function
+    #    returns normally; the caller (``resolve_or_prompt``) has already
+    #    used the in-memory return value and is unaffected by the on-disk
+    #    permission outcome.
+    #
+    # NOTE: ``os.chmod`` (rather than ``path.chmod``) is used for symmetry
+    # with the rest of the codebase that imports ``os`` directly; both call
+    # the same syscall underneath.
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        return

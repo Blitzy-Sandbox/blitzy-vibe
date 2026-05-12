@@ -345,6 +345,66 @@ class SessionManager:
             with target.open("w", encoding="utf-8") as f:
                 f.write(payload)
             span_attrs["bytes_written"] = len(payload.encode("utf-8"))
+
+            # Filesystem hardening (QA checkpoint #7 Issue #3): tighten the
+            # on-disk permission of the session JSON file to ``0o600`` (owner
+            # read/write only). Session files contain the full conversation
+            # history -- user prompts, tool outputs, and assistant responses
+            # -- which may include sensitive personal, business, or source-
+            # code context typed into the agent. The default mode produced
+            # by ``target.open("w")`` honors the process umask (typically
+            # ``0o022`` on Linux), yielding ``0o644`` (world-readable). On
+            # multi-user workstations and shared developer environments this
+            # would expose every operator's chat history to any local user
+            # with read access to ``~/.blitzy/sessions/``. Explicitly
+            # chmod'ing both the file (``0o600``) and the immediate parent
+            # branch directory (``0o700``) closes this gap.
+            #
+            # We chmod the leaf file plus the three nested directories
+            # (``{branch}``, ``{repo}``, ``sessions``) that this manager
+            # owns and creates via ``mkdir(parents=True)`` above. We do NOT
+            # chmod ``self._home`` (e.g. ``~/.blitzy/``) because that
+            # directory is shared with other tools (logs, config) and may
+            # legitimately already exist with operator-chosen permissions
+            # that we should not silently override.
+            #
+            # All chmod calls are wrapped in ``try / except OSError`` to
+            # preserve the function's no-raise contract (consistent with AAP
+            # rule 6 -- saves happen on every turn and MUST NOT crash the
+            # CLI if the filesystem rejects a mode change). Filesystems that
+            # do not support permission bits (e.g. FAT32, some FUSE mounts,
+            # certain Windows-mounted shares) raise ``OSError`` from chmod;
+            # the session content is already persisted at that point, so a
+            # permission-tightening failure is purely a hardening miss, not
+            # a data-loss event.
+            try:
+                os.chmod(target, 0o600)
+            except OSError:
+                # Best-effort; file is already written. Skip directory
+                # tightening too -- if leaf chmod failed, the directory
+                # chmod is unlikely to succeed and adds noise without value.
+                span_attrs["outcome"] = "ok"
+                return target
+            # Tighten the three manager-owned directories we created via
+            # ``mkdir(parents=True)``. We walk from leaf to root so a
+            # mid-chain failure (e.g., a parent that already exists and is
+            # not owned by us) does not abort tightening of the inner dirs
+            # that we definitely just created.
+            for ancestor in (
+                target.parent,  # .../sessions/{repo}/{branch}/
+                target.parent.parent,  # .../sessions/{repo}/
+                target.parent.parent.parent,  # .../sessions/
+            ):
+                try:
+                    os.chmod(ancestor, 0o700)
+                except OSError:
+                    # Best-effort; continue to the next ancestor. We
+                    # intentionally do NOT break out of the loop because
+                    # the failure may be specific to one directory (e.g.,
+                    # a pre-existing operator-chmod'd dir higher up in the
+                    # tree) while inner directories that this save just
+                    # created can still be tightened successfully.
+                    continue
             span_attrs["outcome"] = "ok"
             return target
 
