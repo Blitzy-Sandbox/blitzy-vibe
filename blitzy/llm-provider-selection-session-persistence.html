@@ -656,7 +656,7 @@
           </div>
           <div class="kpi-card">
             <span class="kpi-icon"><i data-lucide="shield-check"></i></span>
-            <span class="kpi-value">13</span>
+            <span class="kpi-value">11</span>
             <span class="kpi-label">Behavioral Rules</span>
             <p class="kpi-desc">All verbatim from prompt, mapped to tests</p>
           </div>
@@ -1063,10 +1063,30 @@ anthropic = 200000</code></pre>
       <!-- =================================================================
            SLIDE 16 — Closing. Navy background; three-bullet next-steps;
            brand lockup with gradient-text mark; boundary footer.
+           The icon-row above the next-steps list satisfies AAP section 0.8.3:
+           every slide carries at least one non-text visual (Lucide SVG icons)
+           from the enumerated set {KPI cards, styled tables, Mermaid diagrams,
+           Lucide SVG icons}. Three icons map 1:1 to the three numbered
+           next-step actions below: flask-conical = test/quality-gate run,
+           play-circle = three-path demo, activity = dashboard observability.
            ================================================================= -->
       <section class="slide-closing">
         <p class="eyebrow">Next Steps</p>
         <h2>Ship the prompt. Ship the backend. Ship the picker.</h2>
+        <div class="icon-row">
+          <span class="icon-item">
+            <i data-lucide="flask-conical"></i>
+            <span class="icon-label">Validate</span>
+          </span>
+          <span class="icon-item">
+            <i data-lucide="play-circle"></i>
+            <span class="icon-label">Demo</span>
+          </span>
+          <span class="icon-item">
+            <i data-lucide="activity"></i>
+            <span class="icon-label">Observe</span>
+          </span>
+        </div>
         <ol class="closing-list">
           <li>Run <code>uv run pytest tests/ --cov-fail-under=80</code> and the lint gates (<code>ruff check</code>, <code>ruff format --check</code>)</li>
           <li>Demo the three startup paths: default (prompt), <code>--provider blitzy|mistral|anthropic</code>, and <code>--resume</code> session picker</li>
