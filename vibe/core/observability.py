@@ -279,6 +279,38 @@ def _increment(name: str, amount: int = 1) -> None:
         _metrics["counters"][name] = _metrics["counters"].get(name, 0) + amount
 
 
+def increment(name: str, amount: int = 1) -> None:
+    """Atomically increment a named counter visible via :func:`metrics_snapshot`.
+
+    This is the PUBLIC entry point operators use to emit named metrics
+    referenced by ``docs/observability/dashboard.json`` (e.g.,
+    ``turns_completed``, ``compactions_triggered``). It wraps the internal
+    :func:`_increment` so that callers do not depend on the underscore-
+    prefixed symbol (which is reserved for module-internal use), and so that
+    future changes to the storage backend (e.g., shipping counters over the
+    network) can be threaded through the public API without callers being
+    aware.
+
+    Args:
+        name: The counter name. By convention, dashboard-referenced counters
+            use ``snake_case`` (e.g., ``turns_completed``) while span-derived
+            counters use the dotted ``span.{name}.count`` form emitted
+            automatically by :func:`span`.
+        amount: Non-negative integer step. Defaults to ``1``. Operators may
+            pass larger amounts for batched increments.
+
+    Example:
+        ::
+
+            # In the per-turn observer:
+            increment("turns_completed")
+
+            # In the compaction routine, after a successful compaction:
+            increment("compactions_triggered")
+    """
+    _increment(name, amount)
+
+
 def _record_histogram(name: str, value: float) -> None:
     """Atomically append ``value`` to the named histogram."""
     with _metrics_lock:

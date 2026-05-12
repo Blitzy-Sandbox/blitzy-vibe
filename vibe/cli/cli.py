@@ -37,7 +37,7 @@ from vibe.core.git_context import detect as detect_git_context
 from vibe.core.llm.backend.factory import BACKEND_FACTORY
 from vibe.core.llm.types import BackendLike
 from vibe.core.middleware import AutoCompactMiddleware
-from vibe.core.observability import set_correlation_id
+from vibe.core.observability import increment, set_correlation_id
 from vibe.core.paths.config_paths import CONFIG_FILE, HISTORY_FILE
 from vibe.core.programmatic import run_programmatic
 from vibe.core.session import SessionManager, SessionRecord, new_session
@@ -560,10 +560,22 @@ def _make_message_observer(
     AgentLoop invokes the callback for every new message appended to history.
     We mirror the message into the SessionRecord and full-overwrite the JSON
     file (AAP rule 6 — save after every turn).
+
+    The callback also emits the named ``turns_completed`` counter (AAP §0.5.5
+    per-turn flow diagram, ``docs/observability/dashboard.json`` metric
+    panel "Turns per minute"). The counter is incremented on EVERY message
+    appended (user inputs, assistant responses, tool messages) so the
+    dashboard ``rate(1m)`` aggregation reflects total conversational
+    throughput rather than just user-initiated turns.
     """
 
     def _on_message_added(msg: LLMMessage) -> None:
         session_record.messages.append(msg)
+        # AAP §0.5.5 per-turn flow: emit ``turns_completed`` counter so the
+        # dashboard panel "Turns per minute" (docs/observability/dashboard.json
+        # metric_panels[0]) resolves to live data. Incremented BEFORE save so
+        # that an OSError during save does not lose the per-turn metric.
+        increment("turns_completed")
         try:
             session_manager.save(session_record)
         except OSError as exc:

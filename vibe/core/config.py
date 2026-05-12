@@ -390,11 +390,20 @@ class ContextLimitsConfig(BaseModel):
     The field names match the lowercase ``Backend`` enum values exactly so
     that callers can look up a limit by enum value via
     ``getattr(context_limits, backend.value)`` (AAP rule 13).
+
+    Validation:
+        Every field carries a ``gt=0`` constraint so that ``0`` or negative
+        token limits are rejected at config-load time rather than producing
+        downstream silent failures (e.g.,
+        ``int(-1 * 0.8) == 0`` would mask an operator typo because the
+        compaction threshold would never trigger). Operators who genuinely
+        want to disable compaction should set the limit to a deliberately
+        large value (e.g., ``10_000_000``), not zero or negative.
     """
 
-    blitzy: int = 128_000
-    mistral: int = 32_000
-    anthropic: int = 200_000
+    blitzy: int = Field(default=128_000, gt=0)
+    mistral: int = Field(default=32_000, gt=0)
+    anthropic: int = Field(default=200_000, gt=0)
 
 
 class VibeConfig(BaseSettings):

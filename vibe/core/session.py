@@ -33,8 +33,19 @@ the existing subpackage modules.
 
 Storage root resolution order (AAP §0.6.1 Group 1):
 
-1. ``VIBE_HOME`` env var, if set and non-empty.
-2. ``~/.blitzy`` (``Path.home() / ".blitzy"``).
+1. ``VIBE_HOME`` env var, if set and non-empty (AAP-mandated highest
+   precedence for the sessions root).
+2. ``BLITZY_HOME`` env var, if set and non-empty (operator-convenience
+   fallback that aligns with the rest of the codebase — notably
+   ``vibe/core/paths/global_paths.py`` — so an operator who sets only one
+   of the two env vars sees consistent session storage behavior).
+3. ``~/.blitzy`` (``Path.home() / ".blitzy"``).
+
+The two env vars coexist because the AAP explicitly named ``VIBE_HOME``
+for the sessions root while the pre-existing codebase used ``BLITZY_HOME``
+for the global config / log paths. Reading both (in the order above)
+preserves the AAP precedence while preventing the operator-experience
+divergence flagged by QA report finding Issue #2.
 
 Compaction (rule 7): when ``len(json.dumps(messages)) // 4`` exceeds
 ``0.8 * token_limit``, the oldest half of the messages is replaced by a single
@@ -65,7 +76,7 @@ import uuid
 from pydantic import BaseModel, ConfigDict
 
 from vibe.core.llm.exceptions import SessionNotFoundError
-from vibe.core.observability import span
+from vibe.core.observability import increment, span
 from vibe.core.types import LLMMessage, Role
 
 # ---------------------------------------------------------------------------
@@ -204,8 +215,13 @@ class SessionManager:
     1. The constructor argument ``vibe_home`` (highest precedence — used by
        tests for hermetic ``tmp_path`` injection).
     2. The ``VIBE_HOME`` environment variable, if set and non-empty after
-       stripping whitespace.
-    3. ``~/.blitzy`` (``Path.home() / ".blitzy"``) as the production default.
+       stripping whitespace (AAP §0.6.1 mandated env var for sessions root).
+    3. The ``BLITZY_HOME`` environment variable, if set and non-empty
+       (operator-convenience fallback that aligns with
+       ``vibe/core/paths/global_paths.py`` — addresses QA report Issue #2
+       so operators setting only one of the two env vars get consistent
+       behavior).
+    4. ``~/.blitzy`` (``Path.home() / ".blitzy"``) as the production default.
 
     Each session is a single JSON file written by full overwrite after every
     turn (AAP rule 6). Compaction collapses the oldest-half messages into a
@@ -225,7 +241,9 @@ class SessionManager:
 
         Args:
             vibe_home: Explicit override for the Vibe home directory. When
-                ``None``, falls back to ``$VIBE_HOME`` (if set), then to
+                ``None``, falls back to ``$VIBE_HOME`` (AAP-mandated), then
+                ``$BLITZY_HOME`` (operator-convenience fallback consistent
+                with ``vibe/core/paths/global_paths.py``), then
                 ``~/.blitzy``. This argument is the primary mechanism by
                 which tests inject a temporary directory without monkey
                 patching :func:`Path.home`.
@@ -233,7 +251,19 @@ class SessionManager:
         if vibe_home is not None:
             self._home = Path(vibe_home)
         else:
+            # Resolution order (AAP §0.6.1 + QA report Issue #2 mitigation):
+            # 1. VIBE_HOME (AAP-mandated for sessions root).
+            # 2. BLITZY_HOME (consistent with the rest of the codebase —
+            #    notably vibe/core/paths/global_paths.py uses this name).
+            # 3. ~/.blitzy default.
+            # Reading both env vars (with VIBE_HOME winning when both are
+            # set, preserving AAP precedence) prevents the operator-UX gap
+            # flagged by QA where setting only one env var produced
+            # inconsistent results between sessions storage and other home-
+            # rooted artifacts.
             env_home = os.environ.get("VIBE_HOME", "").strip()
+            if not env_home:
+                env_home = os.environ.get("BLITZY_HOME", "").strip()
             self._home = Path(env_home) if env_home else Path.home() / ".blitzy"
         self._sessions_root = self._home / "sessions"
 
@@ -507,6 +537,13 @@ class SessionManager:
             span_attrs["message_count_after"] = len(session.messages)
             span_attrs["summary_length"] = len(summary_text)
             span_attrs["outcome"] = "ok"
+            # AAP §0.5.5 per-turn flow + dashboard.json metric_panels[1]
+            # "Compaction count": emit the named ``compactions_triggered``
+            # counter only when a real compaction was performed. The
+            # below_threshold and too_few_messages fast-paths above return
+            # without incrementing so the metric reflects ACTUAL
+            # compactions, not threshold evaluations.
+            increment("compactions_triggered")
             return session
 
 
