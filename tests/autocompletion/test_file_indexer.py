@@ -12,6 +12,18 @@ from vibe.core.autocompletion.file_indexer import FileIndexer
 # This suite runs against the real filesystem and watcher. A faked store/watcher
 # split would be faster to unit-test, but given time constraints and the low churn
 # expected for this feature, integration coverage was chosen as a trade-off.
+#
+# Every test in this module is grouped under the ``file_indexer_serial`` xdist
+# group so that all tests in the module land on the same xdist worker
+# (consumed by ``pytest -n auto --dist=loadgroup``). This eliminates
+# cross-worker inotify and process-level GIL contention that would
+# otherwise stretch the watcher's poll-to-dispatch latency far past any
+# reasonable ``_wait_for`` budget under heavy load (``--cov``
+# instrumentation on a 128-CPU/4-core host). The remaining tests are
+# defensive: ``@pytest.mark.timeout(120)`` overrides the project-wide
+# 10-second pytest-timeout, and ``_wait_for`` allows up to 60 seconds for
+# event dispatch.
+pytestmark = pytest.mark.xdist_group("file_indexer_serial")
 
 
 @pytest.fixture
@@ -21,7 +33,16 @@ def file_indexer() -> Generator[FileIndexer]:
     indexer.shutdown()
 
 
-def _wait_for(condition: Callable[[], bool], timeout=3.0) -> bool:
+def _wait_for(condition: Callable[[], bool], timeout=60.0) -> bool:
+    # The 60s budget accommodates filesystem watcher dispatch latency under
+    # the most adverse condition we observe in CI: ``pytest --cov`` running
+    # under ``-n auto`` on a host that reports 128 CPUs but only has ~4
+    # physical cores. Under that combination, coverage tracing in every
+    # Python frame combined with watcher-thread GIL contention can stretch
+    # the watcher's poll-to-dispatch latency well past the original 3s
+    # budget that exhibited flakes in the QA report. Tests that rely on
+    # this helper additionally carry ``@pytest.mark.timeout(120)`` to
+    # override the project-wide 10s ``pytest-timeout`` budget.
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if condition():
@@ -30,11 +51,51 @@ def _wait_for(condition: Callable[[], bool], timeout=3.0) -> bool:
     return False
 
 
+def _warmup_watcher(
+    file_indexer: FileIndexer, tmp_path: Path, *, sentinel: str = ".warmup_sentinel"
+) -> None:
+    """Force the OS file watcher to fully warm up before the test's mutation.
+
+    The production :class:`WatchController` only guarantees that its
+    ``ready_event`` is set within 0.5 seconds of ``start()``. Under
+    ``pytest --cov`` instrumentation on a host where many xdist workers
+    contend for the GIL, the watcher thread may not actually have begun
+    polling within that 0.5-second budget — yet ``get_index`` returns
+    immediately, the test moves on to create the file, and the change
+    event is lost because the watcher started polling AFTER the file
+    already existed.
+
+    This helper synchronizes on a sentinel file: it creates a known
+    file, polls until the watcher reports it, then deletes the sentinel
+    and re-confirms its removal. After this round trip we know the
+    watcher is actively dispatching events.
+    """
+    sentinel_path = tmp_path / sentinel
+    sentinel_path.write_text("", encoding="utf-8")
+    detected = _wait_for(
+        lambda: any(
+            entry.rel == sentinel for entry in file_indexer.get_index(Path("."))
+        )
+    )
+    if not detected:  # pragma: no cover - defensive escape hatch
+        # The watcher genuinely never warmed up; let the actual test
+        # report the failure rather than masking it here.
+        return
+    sentinel_path.unlink()
+    _wait_for(
+        lambda: all(
+            entry.rel != sentinel for entry in file_indexer.get_index(Path("."))
+        )
+    )
+
+
+@pytest.mark.timeout(120)
 def test_updates_index_on_file_creation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, file_indexer: FileIndexer
 ) -> None:
     monkeypatch.chdir(tmp_path)
     file_indexer.get_index(Path("."))
+    _warmup_watcher(file_indexer, tmp_path)
 
     target = tmp_path / "new_file.py"
     target.write_text("", encoding="utf-8")
@@ -46,6 +107,7 @@ def test_updates_index_on_file_creation(
     )
 
 
+@pytest.mark.timeout(120)
 def test_updates_index_on_file_deletion(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, file_indexer: FileIndexer
 ) -> None:
@@ -53,6 +115,7 @@ def test_updates_index_on_file_deletion(
     target = tmp_path / "new_file.py"
     target.write_text("", encoding="utf-8")
     file_indexer.get_index(Path("."))
+    _warmup_watcher(file_indexer, tmp_path)
 
     target.unlink()
 
@@ -63,6 +126,7 @@ def test_updates_index_on_file_deletion(
     )
 
 
+@pytest.mark.timeout(120)
 def test_updates_index_on_file_rename(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, file_indexer: FileIndexer
 ) -> None:
@@ -70,6 +134,7 @@ def test_updates_index_on_file_rename(
     old_file = tmp_path / "old_name.py"
     old_file.write_text("", encoding="utf-8")
     file_indexer.get_index(Path("."))
+    _warmup_watcher(file_indexer, tmp_path)
 
     new_file = tmp_path / "new_name.py"
     old_file.rename(new_file)
@@ -84,6 +149,7 @@ def test_updates_index_on_file_rename(
     )
 
 
+@pytest.mark.timeout(120)
 def test_updates_index_on_folder_rename(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, file_indexer: FileIndexer
 ) -> None:
@@ -96,6 +162,7 @@ def test_updates_index_on_folder_rename(
     for file_path in old_file_paths:
         file_path.write_text("", encoding="utf-8")
     file_indexer.get_index(Path("."))
+    _warmup_watcher(file_indexer, tmp_path)
 
     new_folder = tmp_path / "new_folder"
     old_folder.rename(new_folder)
@@ -112,11 +179,13 @@ def test_updates_index_on_folder_rename(
     )
 
 
+@pytest.mark.timeout(120)
 def test_updates_index_incrementally_by_default(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, file_indexer: FileIndexer
 ) -> None:
     monkeypatch.chdir(tmp_path)
     file_indexer.get_index(Path("."))
+    _warmup_watcher(file_indexer, tmp_path)
 
     rebuilds_before = file_indexer.stats.rebuilds
     incremental_before = file_indexer.stats.incremental_updates
@@ -134,6 +203,7 @@ def test_updates_index_incrementally_by_default(
     assert file_indexer.stats.incremental_updates >= incremental_before + 1
 
 
+@pytest.mark.timeout(120)
 def test_rebuilds_index_when_mass_change_threshold_is_exceeded(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -162,6 +232,7 @@ def test_rebuilds_index_when_mass_change_threshold_is_exceeded(
         indexer.shutdown()
 
 
+@pytest.mark.timeout(120)
 def test_switching_between_roots_restarts_index(
     tmp_path: Path,
     tmp_path_factory: pytest.TempPathFactory,
@@ -193,6 +264,7 @@ def test_switching_between_roots_restarts_index(
     )
 
 
+@pytest.mark.timeout(120)
 def test_watcher_failure_does_not_break_existing_index(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, file_indexer: FileIndexer
 ) -> None:
