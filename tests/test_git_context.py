@@ -181,6 +181,47 @@ def test_origin_url_with_trailing_slash(tmp_working_directory: Path) -> None:
     assert repo == "repo"
 
 
+def test_origin_url_with_dot_git_and_trailing_slash(
+    tmp_working_directory: Path,
+) -> None:
+    """URL with BOTH '.git' suffix AND trailing slash strips both, yielding repo='repo'.
+
+    Regression for the operation-order bug where the ``.git`` suffix strip ran
+    BEFORE the trailing slash strip. For input ``https://.../repo.git/``,
+    ``endswith('.git')`` returned ``False`` (URL ended in ``/``), so ``.git`` was
+    skipped; the subsequent slash strip then left ``...repo.git`` whose final
+    path segment is ``repo.git``. Stripping slashes FIRST uniformly handles
+    both ``...repo.git`` and ``...repo.git/``.
+    """
+    git_dir = tmp_working_directory / ".git"
+    git_dir.mkdir()
+    _write_attached_head(git_dir, "main")
+    _write_config_with_origin(git_dir, "https://github.com/owner/repo.git/")
+
+    repo, branch = detect()
+
+    assert repo == "repo"
+    assert branch == "main"
+
+
+def test_origin_url_ssh_form_with_dot_git_and_trailing_slash(
+    tmp_working_directory: Path,
+) -> None:
+    """SSH-form URL with both '.git' suffix AND trailing slash yields repo='repo'.
+
+    Regression coverage for the SSH-form variant of the operation-order bug
+    (sibling of :func:`test_origin_url_with_dot_git_and_trailing_slash`).
+    """
+    git_dir = tmp_working_directory / ".git"
+    git_dir.mkdir()
+    _write_attached_head(git_dir, "main")
+    _write_config_with_origin(git_dir, "git@github.com:owner/repo.git/")
+
+    repo, _ = detect()
+
+    assert repo == "repo"
+
+
 # ---------------------------------------------------------------------------
 # Missing remote section / missing config file
 # ---------------------------------------------------------------------------

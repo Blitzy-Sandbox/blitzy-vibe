@@ -168,10 +168,15 @@ def _strip_url_to_repo_name(url: str) -> str:
     if not url:
         return ""
 
-    # Strip trailing ".git" (and trailing slash, defensively).
+    # Strip trailing slashes FIRST, then ``.git``. Order matters: if we ran the
+    # ``.git`` strip first, an input like ``https://github.com/owner/repo.git/``
+    # would skip the ``.git`` strip (it does not end in ``.git`` because of the
+    # trailing slash), then the slash strip would leave ``...repo.git`` whose
+    # final segment is ``repo.git`` rather than the desired ``repo``. Stripping
+    # slashes first uniformly handles both ``...repo.git`` and ``...repo.git/``.
+    url = url.rstrip("/")
     if url.endswith(".git"):
         url = url[: -len(".git")]
-    url = url.rstrip("/")
     if not url:
         return ""
 

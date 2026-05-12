@@ -35,9 +35,10 @@
     },
     {
       "name": "P99 LLM latency by provider",
-      "metric": "llm.complete.duration_ms",
+      "metric": "span.llm.complete.duration_ms",
       "aggregation": "p99",
-      "group_by": ["attrs.provider"]
+      "group_by": ["attrs.provider"],
+      "description": "Histogram of llm.complete span durations. Uses the 'span.' namespace prefix emitted by vibe/core/observability.py:_record_histogram (f'span.{name}.duration_ms')."
     }
   ],
   "trace_views": [
