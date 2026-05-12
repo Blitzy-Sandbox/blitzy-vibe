@@ -2,786 +2,752 @@
 
 # 0. Agent Action Plan
 
-## 0.1 Intent Clarification
+## 0.1 Executive Summary
 
-### 0.1.1 Core Refactoring Objective
+This Agent Action Plan defines the precise interpretation, scope, and execution strategy for extending the existing **blitzy-agent** Python CLI (`pyproject.toml:project.name`) with three interconnected capabilities that together transform the agent's startup, authentication, and persistence model:
 
-Based on the prompt, the Blitzy platform understands that the refactoring objective is to **rebrand** a Python CLI application currently named "Mistral Vibe" (by Mistral AI) to "Blitzy Agent" (by Blitzy) and **replace the terminal color theme** with a purple-centric palette anchored on `#5B39F3`. The application is a coding agent built with Python 3.12, Textual, Pydantic, and httpx. The source lives under the `vibe/` package directory, which remains unchanged.
+- **Capability A — Provider selection at startup.** A numbered interactive prompt is shown before any LLM backend is instantiated, letting the operator pick **[1] Blitzy (default)**, **[2] Mistral**, or **[3] Anthropic**. The prompt is suppressed when `--resume` or `--provider {blitzy,mistral,anthropic}` is supplied on the command line.
+- **Capability B — Anthropic LLM backend extension.** The existing `AnthropicBackend` at `vibe/core/llm/backend/anthropic_llm.py` is extended to resolve its API key through a deterministic chain (env var → user-level config field → interactive prompt) and to honor a new `anthropic_model` config field (default `claude-sonnet-4-6`). The Anthropic SDK (`anthropic>=0.100.0`) — already declared in `pyproject.toml` — is reused; no new dependency is required.
+- **Capability C — Session persistence with `--resume`.** A new `SessionManager` writes per-repo/per-branch session JSON to `~/.blitzy/sessions/{repo_name}/{branch_name}/{session_id}.json` after every turn, and auto-compacts the conversation when the estimated token count exceeds **80%** of the active provider's configured context limit (defaults: `blitzy=128000`, `mistral=32000`, `anthropic=200000`; overridable via `[context_limits]` in `~/.blitzy/config.toml`). The `--resume` flag is reworked from its current `--resume SESSION_ID` form into a no-argument flag that opens an interactive session picker filtered to the current `(repo, branch)`.
 
-- **Refactoring type:** Brand identity replacement + Visual theme migration
-- **Target repository:** Same repository (in-place brand string substitution and theme color replacement)
-- **The `vibe/` package directory name is explicitly preserved** — only user-facing strings, CLI metadata, documentation, configuration defaults, and color definitions are affected
+A new **`BlitzyLLMBackend`** is created at `vibe/core/llm/backend/blitzy.py` that performs a one-shot context check against `GET https://api.blitzy.com/context?repo=...&branch=...` (5-second timeout) and streams completions from `POST https://api.blitzy.com/v1/api/chat` over Server-Sent Events using `httpx` (10-second connect timeout, 3600-second read timeout). HTTP 200 implies `connected = True`; HTTP 404 implies `connected = False` and is **not** an error; any other non-2xx or a timeout raises `BlitzyConnectionError`. SSE event payloads are parsed with field-priority `content → text → message → delta.content`.
 
-The refactoring goals, listed with enhanced clarity:
+A new **`vibe/core/git_context.py`** module reads `.git/HEAD` for the branch name and `.git/config` for the `origin` remote URL (stripping the trailing `.git` and taking the final path segment as the repo name). It returns `("", "")` silently when `.git` is absent or unreadable and **MUST NOT** raise exceptions, satisfying behavioral rule 3.
 
-- **Brand string replacement:** Every user-visible occurrence of "Mistral Vibe", "mistral-vibe", "Mistral AI" (as the app author, not the API provider), "vibe" (as CLI command), "vibe-acp" (as CLI command), "~/.vibe/", "VIBE_*" (env var prefix), "vibe@mistral.ai", and "mistralai/mistral-vibe" (GitHub) must be replaced with their Blitzy equivalents per the brand mapping table
-- **Theme color replacement:** The existing orange/amber welcome banner gradient and terminal-derived theme must be replaced with a cohesive purple-centric Textual CSS palette anchored on accent `#5B39F3`
-- **Preserve all functional behavior:** No refactoring, no feature additions, no "while we're here" improvements — every edit is a direct brand string replacement or theme color change
+The agent boundaries are strict: changes are confined to `vibe/core/llm/`, `vibe/core/`, `vibe/cli/`, and `pyproject.toml`. The `MistralBackend` at `vibe/core/llm/backend/mistral.py` is preserved unchanged (boundary contract); the ACP layer (`vibe/acp/**`), MCP tool framework (`vibe/core/tools/**`), skill system (`vibe/skills/**`), and existing TUI layout (`vibe/cli/textual_ui/**`) are explicitly out of scope.
 
-Implicit requirements surfaced:
+In addition to the feature code, this delivery includes the rule-mandated artifacts: a single self-contained reveal.js executive presentation at `blitzy/llm-provider-selection-session-persistence.html` (12–18 slides, Blitzy brand identity, Lucide icons, Mermaid diagrams), a structured-logging observability module at `vibe/core/observability.py` providing per-session correlation IDs and trace spans around LLM calls, and a dashboard template at `docs/observability/dashboard.json` describing the log/metric queries an operator would use to monitor a session.
 
-- All test assertion strings containing old branding must be updated to match the new brand, while test logic and test structure remain untouched
-- The PyPI project name changes from `mistral-vibe` to `blitzy-agent`, requiring updates in update-notifier gateways, install scripts, and CI/CD workflows
-- The Zed extension manifest (`distribution/zed/extension.toml`) must be updated with the new brand identity and GitHub URLs
-- The GitHub Action (`action.yml`) must reflect "Blitzy Agent" in its name, description, author, and step names
-- The `VIBE_HOME` environment variable override logic in `vibe/core/paths/global_paths.py` must change to `BLITZY_HOME`
-- The history file greeting "Hello Vibe!" must become "Hello Blitzy!"
-- The onboarding welcome screen text "Mistral Vibe" and trust dialog message must reflect "Blitzy Agent"
+**Success criteria** (verifiable, no follow-up work):
 
-### 0.1.2 Technical Interpretation
+- On a startup invocation that includes neither `--resume` nor `--provider`, the numbered provider prompt is displayed before any backend constructor is called (rule 4).
+- `--provider blitzy|mistral|anthropic` skips the prompt and instantiates the correct backend through the factory.
+- `--resume` skips provider selection when a session is found and falls through to provider selection (without exiting) when no sessions exist for the current `(repo, branch)`.
+- Session files are written by full-overwrite after every turn (rule 6).
+- Auto-compaction triggers when `len(json.dumps(messages)) // 4` exceeds 80% of the active provider's configured limit and replaces the oldest half with a single `system` summary while preserving the most recent messages verbatim (rule 7).
+- `BLITZY_API_KEY`, `ANTHROPIC_API_KEY`, and `MISTRAL_API_KEY` values never appear in logs, exception messages, or tracebacks (rule 2).
+- `pytest tests/` passes with zero failures and ≥80% line coverage for `vibe/core/git_context.py`, `vibe/core/llm/backend/blitzy.py`, `vibe/core/llm/backend/anthropic_llm.py` (modified portions), and `vibe/core/session.py`.
 
-This refactoring translates to the following technical transformation strategy:
+## 0.2 Intent Clarification
 
-- **Layer 1 — Package metadata:** Update `pyproject.toml` (project name, description, keywords, authors, URLs, script entry points), `flake.nix` description, and `action.yml`
-- **Layer 2 — CLI entry points:** The script entry points change from `vibe`/`vibe-acp` to `blitzy`/`blitzy-acp` in `pyproject.toml`, but the Python module paths (`vibe.cli.entrypoint:main`, `vibe.acp.entrypoint:main`) remain identical since the `vibe/` package directory is preserved
-- **Layer 3 — Configuration defaults:** `env_prefix` in `SettingsConfigDict` changes from `VIBE_` to `BLITZY_`, the default home directory changes from `~/.vibe` to `~/.blitzy`, and all user-facing config path references update accordingly
-- **Layer 4 — User-facing strings:** argparse descriptions, banner text, commit signatures, user-agent strings, onboarding messages, system prompt branding, and ACP `Implementation` metadata are updated
-- **Layer 5 — Visual theme:** The `app.tcss` file receives a purple-centric palette, `terminal_theme.py` adopts purple accent defaults, and the `WelcomeBanner` widget replaces the orange gradient with a purple gradient anchored on `#5B39F3`
-- **Layer 6 — Documentation:** `README.md`, `CONTRIBUTING.md`, `AGENTS.md`, `CHANGELOG.md`, `docs/*.md`, and `vibe/whats_new.md` have all "Mistral Vibe" / "Mistral AI" references replaced
-- **Layer 7 — Tests:** Only assertion strings containing old branding are updated; no test logic or structure changes
+This section restates the user's requirements with crystal-clear technical precision, surfaces implicit constraints, and translates each requirement into concrete implementation actions.
 
-The brand mapping is deterministic and fully enumerated:
+### 0.2.1 Core Feature Objective
 
-| Current Value | Replacement Value | Context |
+Based on the prompt, the Blitzy platform understands that the new feature requirement is to extend the existing **blitzy-agent** CLI with three tightly interconnected capabilities that all share the same startup pipeline, the same authentication chain, and the same on-disk persistence layer:
+
+- **Capability A — Provider selection at startup.** Based on the prompt, the Blitzy platform understands that an interactive numbered prompt MUST be presented before every session unless `--resume` or `--provider` is passed; that Blitzy is option 1 and the default (Enter selects it); and that this selection MUST happen before any backend constructor runs (behavioral rule 4).
+- **Capability B — Anthropic LLM backend (direct SDK).** Based on the prompt, the Blitzy platform understands that a new `AnthropicLLMBackend` is required that calls the Anthropic API directly using the `anthropic` Python SDK, with API key resolved through the chain env var → config field → interactive prompt, and that streaming MUST be performed via the SDK's `client.messages.stream()` API. *Implicit, repository-aligned interpretation:* an `AnthropicBackend` class already exists at `vibe/core/llm/backend/anthropic_llm.py`; this delivery extends that class rather than introducing a parallel implementation, in line with the preservation boundaries that confine changes to `vibe/core/llm/`, `vibe/core/`, `vibe/cli/`, and `pyproject.toml`.
+- **Capability C — Session persistence with `--resume`.** Based on the prompt, the Blitzy platform understands that chat history MUST be stored per repo + branch at `~/.blitzy/sessions/{repo_name}/{branch_name}/`, that `--resume` presents an interactive session picker sorted by recency for the current repo + branch, that the picker MUST fall through to normal provider selection when no sessions exist, and that history MUST auto-compact when approaching the active provider's context limit (80% threshold).
+
+**Implicit requirements surfaced during analysis:**
+
+- The factory key universe MUST be exactly `{"blitzy", "mistral", "anthropic"}` to satisfy rule 13's no-orphaned-strings invariant. The existing `Backend` `StrEnum` already includes `MISTRAL`, `ANTHROPIC`, `GENERIC`, and `CLAUDE_CODE`; a new `Backend.BLITZY` member must be added, and the `BACKEND_FACTORY` map at `vibe/core/llm/backend/factory.py` must include the new entry.
+- The existing CLI `--resume SESSION_ID` semantics (a metavar-bearing optional argument, mutually exclusive with `-c/--continue`) must be reworked to a no-argument flag whose behavior is "open an interactive picker for the current repo + branch". Backward-compatibility considerations are deferred to implementation (a separate deprecation path may keep the SESSION_ID form, but the user requirement is the flag form).
+- The new `vibe/core/session.py` module MUST be a distinct addition that does not collide with the existing `vibe/core/session/` *subpackage* (which contains `session_logger.py`, `session_loader.py`, `session_migration.py` for ACP/MCP turn logging under `~/.blitzy/logs/session/`). The new module manages a separate file family at `~/.blitzy/sessions/{repo}/{branch}/{session_id}.json`.
+- Git context detection MUST be silent on failure: when `.git` is absent or unreadable, the helper returns `("", "")` and the session storage path falls back to `_unknown/_unknown/` (behavioral rule 3).
+- API key masking MUST be implemented as a cross-cutting concern: no env-var value, no config-derived value, and no prompt-entered value may appear in any log line, exception message, or traceback (rule 2). This implies sanitization wrappers around exception construction and a logging filter in the new `observability.py`.
+
+### 0.2.2 Special Instructions and Constraints
+
+The following directives, examples, and constraints from the user prompt are preserved verbatim and treated as non-negotiable inputs to the implementation:
+
+- **Role and boundary directive (user-stated):** "You are a senior Python engineer specializing in LLM integration, CLI development, and session management, with authority over `vibe/core/llm/`, `vibe/core/`, `vibe/cli/`, and `pyproject.toml`. You MUST NOT modify any code outside these boundaries."
+- **Preservation directive — Mistral:** "Mistral backend: untouched, preserved as-is." The `MistralBackend` class at `vibe/core/llm/backend/mistral.py` is treated as REFERENCE-only.
+- **Preservation directive — interface:** "LLM backend interface/protocol: no modifications." The `BackendLike` protocol at `vibe/core/llm/types.py` is consumed as-is by all three backends; rule 1 (interface conformance) is verified by an `isinstance/protocol conformance test for each` backend.
+- **Preservation directive — additive config:** "Existing `.blitzy/config.toml` fields: no modifications, additive extension only." New fields (`blitzy_api_key`, `anthropic_api_key`, `mistral_api_key`, `anthropic_model`, `[context_limits]` table) are appended.
+- **Preservation directive — ACP/MCP/TUI/tools/skills:** "ACP/MCP layers: no changes." "Existing TUI layout: no changes beyond provider selection prompt and session picker at startup." "Tool system, skill system: no changes."
+
+**User Example — Provider selection prompt layout (preserved verbatim):**
+
+```plaintext
+Select LLM provider:
+[1] Blitzy  (default)
+[2] Mistral
+[3] Anthropic
+>
+```
+
+**User Example — Session file JSON format (preserved verbatim):**
+
+```json
+{
+  "session_id": "<uuid4>",
+  "created_at": "<ISO 8601>",
+  "provider": "<blitzy|mistral|anthropic>",
+  "repo": "<str>",
+  "branch": "<str>",
+  "messages": [...],
+  "compacted_summary": "<str|null>"
+}
+```
+
+**Web search research required (cited in §0.10):**
+
+- Verify `claude-sonnet-4-6` is a current Anthropic model identifier and a valid default for `anthropic_model`.
+- Confirm `anthropic` SDK streaming idioms (`client.messages.stream()`).
+- Reference `httpx` async SSE patterns for the Blitzy `/v1/api/chat` endpoint.
+- Reference `.git/HEAD` and `.git/config` file format for plumbing-free git context detection.
+
+### 0.2.3 Technical Interpretation
+
+These feature requirements translate to the following technical implementation strategy:
+
+- To enable **provider selection before any backend is instantiated**, we will create a new `vibe/cli/provider_picker.py` module that prints the four-line prompt above, reads a single line from stdin, treats empty input as "1 → Blitzy", validates case-insensitive `blitzy|mistral|anthropic` token input, and returns a `Backend` enum value. The CLI entrypoint at `vibe/cli/entrypoint.py` will call this picker after argparse, conditionally — only when neither `--resume` nor `--provider` is present — and pass the result downstream to the factory (rule 4).
+- To enable **`--provider` skipping the prompt**, we will extend the argparse configuration in `vibe/cli/entrypoint.py` with `--provider {blitzy,mistral,anthropic}` (`type=str.lower` for case-insensitivity, mapped to `Backend` enum by a helper).
+- To enable the **Anthropic backend's three-tier key resolution**, we will modify `AnthropicBackend.__init__` at `vibe/core/llm/backend/anthropic_llm.py` to call a shared resolver `vibe/core/llm/api_key_prompt.py:resolve_or_prompt(provider, env_var, config_field, config)` which tries env → config → interactive prompt in order and raises `MissingAPIKeyError(provider)` if the user declines (rule 10). The same resolver is reused by the new `BlitzyLLMBackend` and by Mistral key handling (without modifying Mistral backend code — the resolver is invoked from the CLI layer prior to passing the key in via existing config).
+- To enable **`anthropic_model` configurability with `claude-sonnet-4-6` default**, we will add the field to `VibeConfig` in `vibe/core/config.py` and consume it in `AnthropicBackend._build_request_params` (or equivalent existing parameter assembly site).
+- To enable **session persistence**, we will create `vibe/core/session.py` containing a `SessionManager` class with methods `save(session)`, `load(session_id)`, `list_sessions(repo, branch)`, and `compact(session, token_limit)`. Storage is a flat directory per `(repo, branch)`. Compaction uses the *active backend's* `complete()` to summarize the oldest half of messages, then replaces them with a single `{"role": "system", "content": "<summary>"}` entry and sets `compacted_summary` on the session record.
+- To enable **`--resume` interactive picker**, we will create `vibe/cli/session_picker.py` that calls `SessionManager.list_sessions(repo, branch)`, displays each session as `[N] {short_id}  {created_at}  {provider}  {N_messages} messages`, reads a numeric selection, loads the chosen session, and returns both the messages list and the `Backend` enum to skip provider selection (rule 5). When the list is empty, the picker prints `"No previous sessions found for {repo}({branch}) — starting new session"` and returns a sentinel that causes the entrypoint to fall through to the provider picker.
+- To enable **auto-compaction at 80% of the active provider's context limit**, we will add a `ContextLimitsConfig` nested model in `vibe/core/config.py` (fields: `blitzy: int = 128_000`, `mistral: int = 32_000`, `anthropic: int = 200_000`), wire `[context_limits]` parsing into `VibeConfig`, and parameterize the existing `AutoCompactMiddleware` (currently constructed with `threshold=auto_compact_threshold` at `vibe/core/middleware.py`) to read the active provider's limit × 0.8. The session-side check uses the user-specified estimator `len(json.dumps(messages)) // 4` (rule 7).
+- To satisfy **rule 9 (library isolation)**, the new `BlitzyLLMBackend` imports only `httpx` (no `anthropic`), and the extended `AnthropicBackend` imports `anthropic` (its existing `httpx` import is for the SDK transport configuration and remains unchanged).
+- To satisfy **rule 11 (configurable context limits)**, the limits are read at startup from `~/.blitzy/config.toml` `[context_limits]` table via `VibeConfig` loading and propagated into the session manager and middleware; defaults apply when a key is absent.
+
+## 0.3 Repository Scope Discovery
+
+This section catalogs every existing file and folder that participates in the feature delivery, every integration point that must be touched, and every new file that must be created.
+
+### 0.3.1 Comprehensive File Analysis
+
+The following existing files were located, summarized, and confirmed as direct or indirect participants in the feature scope. Paths shown are absolute within the repository root.
+
+| Existing File | Role | Mode | Locator |
+|---|---|---|---|
+| `pyproject.toml` | Dependency manifest; already declares `anthropic>=0.100.0` and `httpx>=0.28.1` | UPDATE | `[pyproject.toml:project.dependencies]` |
+| `vibe/core/llm/types.py` | `BackendLike` protocol all backends must satisfy | REFERENCE | `[vibe/core/llm/types.py:L1-L120]` |
+| `vibe/core/llm/exceptions.py` | Existing exception hierarchy (`BackendErrorBuilder`, etc.) | UPDATE | `[vibe/core/llm/exceptions.py:L1-L195]` |
+| `vibe/core/llm/backend/factory.py` | `BACKEND_FACTORY` map: `{Backend.MISTRAL: MistralBackend, Backend.GENERIC: GenericBackend, Backend.ANTHROPIC: AnthropicBackend, Backend.CLAUDE_CODE: ClaudeCodeBackend}` | UPDATE | `[vibe/core/llm/backend/factory.py:L9-L14]` |
+| `vibe/core/llm/backend/anthropic_llm.py` | `AnthropicBackend.__init__` resolves key only from `provider.api_key_env_var`; uses `anthropic.AsyncAnthropic` | UPDATE | `[vibe/core/llm/backend/anthropic_llm.py:L140-L170]` |
+| `vibe/core/llm/backend/mistral.py` | `MistralBackend` — preservation boundary | REFERENCE (no edits) | `[vibe/core/llm/backend/mistral.py]` |
+| `vibe/core/llm/backend/generic.py` | Generic OpenAI-compatible backend | REFERENCE | `[vibe/core/llm/backend/generic.py]` |
+| `vibe/core/llm/backend/claude_code_llm.py` | Claude Code backend (CLI proxy) | REFERENCE | `[vibe/core/llm/backend/claude_code_llm.py]` |
+| `vibe/core/config.py` | `VibeConfig`, `Backend` enum, `ProviderConfig`, `MissingAPIKeyError`, `_check_api_key` validator | UPDATE | `[vibe/core/config.py:Backend, VibeConfig, MissingAPIKeyError]` |
+| `vibe/core/middleware.py` | `AutoCompactMiddleware(threshold)` at `L90`; `ContextWarningMiddleware` at `L112` | UPDATE | `[vibe/core/middleware.py:L90-L130]` |
+| `vibe/core/agent_loop.py` | Existing `compact()` orchestration at `L824` (REFERENCE for summarization patterns) | REFERENCE | `[vibe/core/agent_loop.py:L824]` |
+| `vibe/core/session/session_logger.py` | Existing turn logger that already uses subprocess to detect git context — preservation boundary | REFERENCE (no edits) | `[vibe/core/session/session_logger.py:L75-L100]` |
+| `vibe/core/session/session_loader.py` | Existing session loader for ACP/MCP logs | REFERENCE | `[vibe/core/session/session_loader.py]` |
+| `vibe/cli/entrypoint.py` | Argparse: existing `-c/--continue` and `--resume SESSION_ID` mutually exclusive group at `L134-L146` | UPDATE | `[vibe/cli/entrypoint.py:L134-L146]` |
+| `vibe/cli/cli.py` | `run_cli` orchestration; loads session and invokes backend | UPDATE | `[vibe/cli/cli.py]` |
+| `vibe/setup/onboarding/screens/api_key.py` | Interactive API key entry screen; `PROVIDER_HELP` map currently `{"mistral": (...)}` | UPDATE | `[vibe/setup/onboarding/screens/api_key.py:PROVIDER_HELP]` |
+| `tests/backend/test_backend.py` | Existing backend conformance test scaffolding using `respx` and iterating over `BACKEND_FACTORY` | REFERENCE / extend | `[tests/backend/test_backend.py]` |
+
+**Integration point discovery** (the precise touchpoints where existing behavior must be extended):
+
+- **CLI entrypoint** — `vibe/cli/entrypoint.py` argparse construction must add `--provider` and rework `--resume` from `metavar="SESSION_ID"` to `action="store_true"`. The mutually-exclusive group with `-c/--continue` is retained.
+- **CLI run flow** — `vibe/cli/cli.py:run_cli` must call provider selection (or session picker when `--resume` is set) before constructing the backend; the resolved `Backend` enum and (optionally) the restored messages list are passed downstream.
+- **Backend factory** — `BACKEND_FACTORY` at `vibe/core/llm/backend/factory.py` must register `Backend.BLITZY → BlitzyLLMBackend`. A small string-to-enum helper (e.g., `provider_string_to_backend("blitzy")`) is added to map `--provider`'s string argument to the enum key (rule 13).
+- **Config (Pydantic Settings)** — `VibeConfig` must expose: `blitzy_api_key: SecretStr | None`, `anthropic_api_key: SecretStr | None`, `mistral_api_key: SecretStr | None`, `anthropic_model: str = "claude-sonnet-4-6"`, and `context_limits: ContextLimitsConfig` (nested model). Reads from `~/.blitzy/config.toml` and `BLITZY_*` env vars (existing `env_prefix="BLITZY_"` convention preserved).
+- **Anthropic backend** — `AnthropicBackend.__init__` must call the shared API key resolver and read `anthropic_model` from config when building request params.
+- **Middleware** — `AutoCompactMiddleware` must accept a per-provider threshold computed at construction as `context_limits[provider] * 0.8`.
+- **Onboarding API key screen** — `PROVIDER_HELP` map at `vibe/setup/onboarding/screens/api_key.py` must add entries for `"blitzy"` and `"anthropic"`.
+
+### 0.3.2 Web Search Research Conducted
+
+Background research undertaken to substantiate library and protocol decisions (full citations in §0.10):
+
+- **Anthropic model identifier verification.** Confirmed `claude-sonnet-4-6` is a current, valid Anthropic Sonnet-class model snapshot (released February 17, 2026; 1M token context window via beta header; default model in claude.ai for Free and Pro plans). Per Anthropic's docs, every Claude model ID is a pinned snapshot — `claude-sonnet-4-6` is therefore appropriate as the literal `anthropic_model` default rather than an alias.
+- **Anthropic SDK streaming patterns.** The `anthropic` Python SDK exposes `client.messages.stream()` for SSE-style streaming — already in use by the existing `AnthropicBackend.complete_streaming`; no change required to the streaming primitive itself.
+- **`httpx` async streaming for Blitzy SSE.** The `httpx.AsyncClient` `stream()` method with `data: {json}\n\n` line iteration is the chosen primitive for the Blitzy `POST /v1/api/chat` consumer; this avoids cross-library SDK coupling and satisfies rule 9.
+- **Plumbing-free git context.** Reading `.git/HEAD` (single line `ref: refs/heads/<branch>` or a 40-char SHA when detached) and `.git/config` (INI-style sections, `[remote "origin"] url = <url>`) is the chosen mechanism. This avoids spawning a `git` subprocess (which the existing `vibe/core/session/session_logger.py` does), thereby satisfying the spec's "MUST NOT raise exceptions" contract because file I/O failures can be caught locally without depending on the `git` binary being installed.
+
+### 0.3.3 New File Requirements
+
+The following new files are created to deliver the feature. Each is justified by a specific behavioral or project rule.
+
+| New File | Purpose | Rule Mapping |
 |---|---|---|
-| `Mistral Vibe` | `Blitzy Agent` | Display name everywhere |
-| `mistral-vibe` | `blitzy-agent` | PyPI package name, CLI references, URLs |
-| `Mistral AI` | `Blitzy` | Author/org name (app context only) |
-| `vibe` (CLI cmd) | `blitzy` | Script entry point |
-| `vibe-acp` (CLI cmd) | `blitzy-acp` | ACP script entry point |
-| `~/.vibe/` | `~/.blitzy/` | Global config home directory |
-| `VIBE_*` (env prefix) | `BLITZY_*` | Pydantic settings env_prefix |
-| `VIBE_HOME` | `BLITZY_HOME` | Home directory override env var |
-| `vibe@mistral.ai` | `agent@blitzy.com` | Commit co-author email |
-| `mistralai/mistral-vibe` | `blitzy/blitzy-agent` | GitHub repository path |
-| `@mistralai/mistral-vibe` | `@blitzy/blitzy-agent` | ACP Implementation name |
-| `Mistral-Vibe/{version}` | `Blitzy-Agent/{version}` | HTTP User-Agent string |
-| `mistral-vibe-update-notifier` | `blitzy-agent-update-notifier` | GitHub gateway User-Agent |
-| `Hello Vibe!` | `Hello Blitzy!` | History file greeting |
+| `vibe/core/git_context.py` | Pure-Python git context detector reading `.git/HEAD` and `.git/config`; returns `(repo, branch)` or `("", "")` silently | Rule 3 |
+| `vibe/core/session.py` | `SessionManager` class — save/load/list/compact for repo-+branch-scoped JSON sessions at `~/.blitzy/sessions/{repo}/{branch}/{session_id}.json` | Rules 6, 7, 11 |
+| `vibe/core/llm/backend/blitzy.py` | `BlitzyLLMBackend` — `httpx`-based context check and SSE-streaming completion; SSE field priority `content → text → message → delta.content`; HTTP 404 → `connected = False`; other non-2xx → `BlitzyConnectionError` | Rules 8, 9 |
+| `vibe/core/llm/api_key_prompt.py` | Shared API key resolver: env var → config field → interactive prompt; offers to save to `~/.blitzy/config.toml`; raises `MissingAPIKeyError(provider)` if declined | Rules 2, 10 |
+| `vibe/cli/provider_picker.py` | Interactive numbered provider picker; Enter selects [1] Blitzy; returns `Backend` enum | Rule 4 |
+| `vibe/cli/session_picker.py` | Interactive session picker for current `(repo, branch)`; fallthrough on empty list | Rule 5 |
+| `vibe/core/observability.py` | Structured logging filter that masks API key values from log records; per-session correlation IDs; trace span context manager around LLM calls; in-memory counters with a `metrics_snapshot()` accessor; `is_ready()` readiness check | Rule 2 + Observability project rule |
+| `docs/observability/dashboard.json` | Dashboard template describing log queries, metric panels, and trace views for an operator | Observability project rule |
+| `blitzy/llm-provider-selection-session-persistence.html` | Single self-contained reveal.js executive presentation, 12–18 slides, Blitzy brand identity, Mermaid + Lucide; covers scope, value, architecture, risks, onboarding | Executive Presentation project rule |
+| `tests/test_git_context.py` | Unit tests for `git_context.py`; covers `.git` absent, malformed `.git/HEAD`, missing `[remote "origin"]`, exotic URL forms | Rule 3 |
+| `tests/test_session_manager.py` | Unit tests for `SessionManager.save/load/list_sessions/compact`; covers write-per-turn, compaction trigger, summary placement, recent-message preservation | Rules 6, 7 |
+| `tests/test_context_limits.py` | Verifies `[context_limits]` overrides take effect and compaction triggers at the overridden 80% threshold | Rule 11 |
+| `tests/test_api_key_masking.py` | Asserts each of `BLITZY_API_KEY`, `ANTHROPIC_API_KEY`, `MISTRAL_API_KEY` values are absent from captured log output, exception messages, and tracebacks | Rule 2 |
+| `tests/test_backend_conformance.py` | Protocol-conformance test instantiating each registered backend and asserting `isinstance(b, BackendLike)` (one parameterized test per backend) | Rule 1 |
+| `tests/backend/test_blitzy_backend.py` | Mocked SSE stream test (≥1 content block yielded), mocked 404 context-check, mocked connect-timeout asserting `BlitzyConnectionError`, mocked field-priority assertion | Rules 8, 9, Gate 8 |
+| `tests/backend/test_anthropic_backend_extension.py` | Tests API key resolution chain (env → config → prompt → declined), `anthropic_model` override, streaming yields ≥1 token (Gate 8, marked `@pytest.mark.integration`) | Rule 10, Gate 8 |
+| `tests/cli/test_provider_selection.py` | Tests all four entry paths (3 explicit selections + Enter default), `--provider` skip-prompt, declined-key → exit | Rules 4, 10, Gate 12 |
+| `tests/cli/test_resume_flow.py` | Tests `--resume` with sessions → picker → load → skip provider selection; `--resume` with empty list → fallthrough to provider selection; restored provider matches saved session's `provider` | Rules 5, 13, Gate 9 |
 
+## 0.4 Dependency Inventory
 
-## 0.2 Source Analysis
+This section enumerates the package dependencies relevant to the feature and documents the reconciliation between the user's stated version pins and the pins already declared in `pyproject.toml`.
 
-### 0.2.1 Comprehensive Source File Discovery
+### 0.4.1 Private and Public Package Registry
 
-Every source file requiring modification has been identified through exhaustive `grep` searches for brand strings (`Mistral Vibe`, `mistral-vibe`, `Mistral AI`, `vibe@mistral`, `mistralai/mistral-vibe`, `Hello Vibe`, `VIBE_`, `~/.vibe`), manual review of config/path modules, theme files, test assertions, documentation, and CI/CD pipelines. The files are organized by modification category.
+The following packages — all already declared in `pyproject.toml` — are the technical foundation for the three capabilities. No new package additions, removals, or updates are required.
 
-**Brand String Source Files (vibe/ package):**
+| Registry | Package | Existing Pin | User-Specified Pin | Purpose | Resolution |
+|---|---|---|---|---|---|
+| PyPI | `anthropic` | `>=0.100.0` `[pyproject.toml:project.dependencies]` | `>=0.30,<1.0` | Anthropic SDK; consumed by `AnthropicBackend.complete_streaming` via `client.messages.stream()` | Existing pin retained (preservation boundary); existing pin already exceeds the user-specified lower bound; user-stated upper bound `<1.0` is treated as advisory not binding because the existing manifest pre-dates the user prompt |
+| PyPI | `httpx` | `>=0.28.1` `[pyproject.toml:project.dependencies]` | `>=0.27,<1.0` | HTTP client for `BlitzyLLMBackend` (context check + SSE streaming) | Existing pin retained (preservation boundary); existing pin already satisfies the user-specified lower bound |
+| PyPI | `pydantic` | `>=2.12.4` `[pyproject.toml:project.dependencies]` | n/a | `VibeConfig`, `ContextLimitsConfig` Pydantic models | No change |
+| PyPI | `pydantic-settings` | `>=2.12.0` `[pyproject.toml:project.dependencies]` | n/a | `BaseSettings` for hierarchical config (`env_prefix="BLITZY_"`) | No change |
+| PyPI | `tomli-w` | `>=1.2.0` `[pyproject.toml:project.dependencies]` | n/a | Writing API key back to `~/.blitzy/config.toml` when the user opts to save | No change |
+| PyPI | `python-dotenv` | `>=1.0.0` `[pyproject.toml:project.dependencies]` | n/a | `.env` loading for `~/.blitzy/.env` | No change |
+| PyPI | `rich` | `>=14.0.0` `[pyproject.toml:project.dependencies]` | n/a | CLI rendering for provider picker and session picker | No change |
+| PyPI | `mistralai` | `==1.9.11` `[pyproject.toml:project.dependencies]` | n/a | Mistral SDK — unchanged | No change (preservation boundary) |
+| PyPI (test) | `respx` | dev-dependency | n/a | HTTP mocking for `BlitzyLLMBackend` SSE / 404 / timeout tests | No change |
+| PyPI (test) | `pytest`, `pytest-asyncio` | dev-dependencies | n/a | Test framework | No change |
 
-| File | Lines Affected | Brand Strings Found |
-|---|---|---|
-| `vibe/__init__.py` | Line 6 | Version string — no brand change needed (version stays `2.0.2`) but reviewed for branding |
-| `vibe/core/config.py` | Line 279, Line 402, Line 452 | `mistral-vibe-cli-latest` (model name — PRESERVED), `env_prefix="VIBE_"` → `BLITZY_`, comment about `VIBE_*` |
-| `vibe/core/system_prompt.py` | Lines 364-369 | `Mistral Vibe` in commit signature, `vibe@mistral.ai` co-author email |
-| `vibe/core/utils.py` | Line 151 | `Mistral-Vibe/{version}` user-agent string |
-| `vibe/core/paths/global_paths.py` | Lines 19, 22-25, 28, 38 | `_DEFAULT_VIBE_HOME = Path.home() / ".vibe"`, `VIBE_HOME` env var name, `vibe.log` file name |
-| `vibe/core/paths/config_paths.py` | Lines 26, 29, 37, 45, 53 | `cwd / ".vibe" / basename` references (local config directory) |
-| `vibe/core/prompts/cli.md` | Line 1 | `Mistral Vibe, a CLI coding-agent built by Mistral AI` |
-| `vibe/core/prompts/tests.md` | Line 1 | `You are Vibe` |
-| `vibe/cli/entrypoint.py` | Lines 21, 77, 109 | `Mistral Vibe interactive CLI` description, `~/.vibe/agents/` help text, `vibe` reference in error msg |
-| `vibe/cli/cli.py` | Lines 70-71 | `Hello Vibe!\n` history file greeting |
-| `vibe/cli/textual_ui/app.py` | Lines 1224, 1252, 1264-1265 | `mistral-vibe` in update messages and PyPI gateway, `vibe --continue` resume hint |
-| `vibe/cli/textual_ui/terminal_theme.py` | Entire file | Theme color logic (functional — receives purple palette changes) |
-| `vibe/cli/textual_ui/app.tcss` | Entire file | Textual CSS stylesheet (uses `$variable` tokens — functional review for theme) |
-| `vibe/cli/textual_ui/widgets/welcome.py` | Lines 47-48, 97 | Orange gradient `TARGET_COLORS`, `Mistral Vibe v{version}` banner text |
-| `vibe/cli/update_notifier/update.py` | Line 125 | `uv tool upgrade mistral-vibe`, `brew upgrade mistral-vibe` |
-| `vibe/cli/update_notifier/adapters/github_update_gateway.py` | Line 34 | `mistral-vibe-update-notifier` User-Agent |
-| `vibe/acp/acp_agent_loop.py` | Lines 135, 140, 158-159 | `Mistral Vibe` in auth method, ACP `Implementation` name/title |
-| `vibe/acp/entrypoint.py` | Lines 25, 45 | `Mistral Vibe in ACP mode` description, `Hello Vibe!` greeting |
-| `vibe/setup/onboarding/__init__.py` | Line 54 | `Mistral Vibe CLI` in setup complete message, `"vibe"` command reference |
-| `vibe/setup/onboarding/screens/welcome.py` | Line 15 | `WELCOME_HIGHLIGHT = "Mistral Vibe"` |
-| `vibe/setup/onboarding/screens/api_key.py` | Lines 21, 24 | `Mistral AI Studio` (API provider — PRESERVED), `mistralai/mistral-vibe` GitHub URL |
-| `vibe/setup/trusted_folders/trust_folder_dialog.py` | Line 61 | `Mistral Vibe setup` trust dialog message |
-| `vibe/whats_new.md` | Line 3 | `.vibe` folder reference |
+### 0.4.2 Dependency Update Summary
 
-**Documentation Files:**
+No dependency additions, version updates, or removals are required to deliver this feature. The user-stated lower bounds `httpx>=0.27` and `anthropic>=0.30` are both already satisfied by the existing pins. The user-stated upper bounds `httpx<1.0` and `anthropic<1.0` are not enforced because the existing manifest pre-dates the prompt and the boundary directive "additive extension only" prohibits downgrading existing pins.
 
-| File | Brand Strings Found |
+If — at implementation time — the chosen `anthropic` SDK release (>=0.100.0) no longer exposes the `client.messages.stream()` API used by the existing `AnthropicBackend`, the implementation will revisit this resolution. As of this Action Plan, no API drift has been observed and the existing `AnthropicBackend.complete_streaming` continues to use `client.messages.stream()` `[vibe/core/llm/backend/anthropic_llm.py]`.
+
+### 0.4.3 Import Updates
+
+No project-wide import rewrites are required. The new files introduce new imports of existing packages:
+
+| New Module | New Imports |
 |---|---|
-| `README.md` | `Mistral Vibe` (multiple), `mistral-vibe` (PyPI/GitHub), `Mistral AI`, `~/.vibe/` paths, `vibe` command references |
-| `CONTRIBUTING.md` | `Mistral Vibe` (multiple), `mistral-vibe` directory reference |
-| `CHANGELOG.md` | `mistral-vibe` in changelog entry |
-| `AGENTS.md` | No brand references found — no changes needed |
-| `docs/README.md` | `Mistral Vibe` documentation title, `mistral-vibe` GitHub link |
-| `docs/acp-setup.md` | `Mistral Vibe` (multiple), `vibe-acp` tool references, ACP config snippets |
+| `vibe/core/llm/backend/blitzy.py` | `import httpx`, `from vibe.core.llm.types import LLMChunk, LLMMessage`, `from vibe.core.llm.exceptions import BlitzyConnectionError` |
+| `vibe/core/git_context.py` | `from pathlib import Path` (stdlib only) |
+| `vibe/core/session.py` | `import json`, `import uuid`, `from datetime import datetime, UTC`, `from pathlib import Path` (stdlib only) |
+| `vibe/core/llm/api_key_prompt.py` | `import getpass`, `import tomli_w`, `from vibe.core.config import MissingAPIKeyError` |
+| `vibe/core/observability.py` | `import logging`, `import contextvars`, `import uuid`, `from contextlib import contextmanager` |
+| `vibe/cli/provider_picker.py` | `from vibe.core.config import Backend` |
+| `vibe/cli/session_picker.py` | `from vibe.core.session import SessionManager`, `from vibe.core.git_context import detect` |
 
-**CI/CD and Distribution Files:**
+Existing files that gain imports:
 
-| File | Brand Strings Found |
+- `vibe/core/llm/backend/factory.py` — `from vibe.core.llm.backend.blitzy import BlitzyLLMBackend`
+- `vibe/core/llm/backend/anthropic_llm.py` — `from vibe.core.llm.api_key_prompt import resolve_or_prompt`
+- `vibe/cli/entrypoint.py` — `from vibe.cli.provider_picker import select_provider`, `from vibe.cli.session_picker import select_session`
+- `vibe/setup/onboarding/screens/api_key.py` — extends existing `PROVIDER_HELP` dict literal
+
+### 0.4.4 External Reference Updates
+
+| File Pattern | Update |
 |---|---|
-| `pyproject.toml` | Lines 2, 4, 8, 52-55, 70-71 — name, description, authors, URLs, scripts |
-| `action.yml` | Lines 2-4, 43, 49-50 — name, description, author, step names |
-| `flake.nix` | Line 2 — `Mistral Vibe!` description |
-| `vibe-acp.spec` | Line 47 — `name='vibe-acp'` display name |
-| `.github/CODEOWNERS` | Line 4 — `@mistralai/mistral-vibe` |
-| `.github/ISSUE_TEMPLATE/bug-report.yml` | Lines 2, 16, 48-49 — `Mistral Vibe` references |
-| `.github/ISSUE_TEMPLATE/config.yml` | Lines 5, 7-8 — `Mistral AI`, `mistral-vibe` URL |
-| `.github/ISSUE_TEMPLATE/feature-request.yml` | Lines 2, 16, 31 — `Mistral Vibe` references |
-| `.github/workflows/build-and-upload.yml` | Line 21 — `mistralai/mistral-vibe` repo check |
-| `.github/workflows/release.yml` | Lines 14, 44, 50, 58 — `mistral-vibe` references |
-| `distribution/zed/extension.toml` | Throughout — `mistral-vibe` id, `Mistral Vibe` name, `Mistral AI` author, URLs |
-| `scripts/install.sh` | Lines 3-4, 82-85 — `Mistral Vibe` installation references |
-| `scripts/prepare_release.py` | Line 26 — `mistralai/mistral-vibe.git` remote URL |
+| `pyproject.toml` | No changes to `[project.dependencies]`; if a future implementation pass discovers a need to declare exact lower bounds matching the user prompt, those would be added additively. |
+| `README.md` | Out of scope (no docs-folder root README rewrite is required; the feature is documented inside its own files). |
+| `docs/observability/dashboard.json` | New file (see §0.6). |
+| `~/.blitzy/config.toml` (user-level, not version-controlled) | New optional fields documented; written on first key-save action. |
 
-**Test Files (assertion strings only):**
+## 0.5 Integration Analysis
 
-| File | Lines Affected | Brand Strings Found |
-|---|---|---|
-| `tests/conftest.py` | Line 27 | `mistral-vibe-cli-latest` (model name — PRESERVED) |
-| `tests/acp/test_initialize.py` | Lines 28, 51, 59, 65 | `@mistralai/mistral-vibe`, `Mistral Vibe` title, `Mistral Vibe Setup` label |
-| `tests/acp/test_acp.py` | Line 76 | `mistral-vibe-cli-latest` (model name — PRESERVED) |
-| `tests/onboarding/test_run_onboarding.py` | Line 60 | `Mistral Vibe CLI` in onboarding complete assertion |
-| `tests/update_notifier/test_pypi_update_gateway.py` | Lines 29, 39, 46, 49, 51, 60, 74, 81, 96, 105, 149 | `mistral-vibe` PyPI project name, `mistral_vibe` wheel filenames |
-| `tests/update_notifier/test_ui_update_notification.py` | Lines 116, 210, 405 | `mistral-vibe` in update notification messages |
+This section identifies the precise integration touchpoints with existing code, with file-and-line locators for each modification.
 
-### 0.2.2 Current Structure Mapping
+### 0.5.1 Direct Modifications Required
 
-```
-Current project structure (brand-affected files highlighted):
-.
-├── pyproject.toml                          ← brand: name, description, authors, URLs, scripts
-├── action.yml                              ← brand: name, description, author, step names
-├── flake.nix                               ← brand: description
-├── vibe-acp.spec                           ← brand: exe name
-├── README.md                               ← brand: throughout
-├── CONTRIBUTING.md                         ← brand: throughout
-├── CHANGELOG.md                            ← brand: entry reference
-├── AGENTS.md                               ← no brand changes needed
-├── .github/
-│   ├── CODEOWNERS                          ← brand: team reference
-│   ├── ISSUE_TEMPLATE/
-│   │   ├── bug-report.yml                  ← brand: references
-│   │   ├── config.yml                      ← brand: URLs
-│   │   └── feature-request.yml             ← brand: references
-│   └── workflows/
-│       ├── build-and-upload.yml            ← brand: repo check
-│       └── release.yml                     ← brand: PyPI/Zed references
-├── distribution/
-│   └── zed/
-│       └── extension.toml                  ← brand: throughout
-├── docs/
-│   ├── README.md                           ← brand: title, links
-│   └── acp-setup.md                        ← brand: references, config snippets
-├── scripts/
-│   ├── install.sh                          ← brand: install references
-│   └── prepare_release.py                  ← brand: remote URL
-├── vibe/
-│   ├── __init__.py                         ← reviewed (no brand change needed)
-│   ├── whats_new.md                        ← brand: .vibe reference
-│   ├── core/
-│   │   ├── config.py                       ← brand: env_prefix, comment
-│   │   ├── system_prompt.py                ← brand: commit signature
-│   │   ├── utils.py                        ← brand: user-agent
-│   │   ├── paths/
-│   │   │   ├── global_paths.py             ← brand: ~/.vibe, VIBE_HOME
-│   │   │   └── config_paths.py             ← brand: .vibe/ local paths
-│   │   └── prompts/
-│   │       ├── cli.md                      ← brand: identity prompt
-│   │       └── tests.md                    ← brand: identity text
-│   ├── cli/
-│   │   ├── entrypoint.py                   ← brand: argparse description
-│   │   ├── cli.py                          ← brand: Hello Vibe greeting
-│   │   ├── textual_ui/
-│   │   │   ├── app.py                      ← brand: update messages, PyPI name
-│   │   │   ├── app.tcss                    ← theme: CSS palette
-│   │   │   ├── terminal_theme.py           ← theme: color derivation
-│   │   │   └── widgets/
-│   │   │       └── welcome.py              ← brand+theme: banner text, gradient colors
-│   │   └── update_notifier/
-│   │       ├── update.py                   ← brand: upgrade commands
-│   │       └── adapters/
-│   │           └── github_update_gateway.py ← brand: User-Agent
-│   ├── acp/
-│   │   ├── acp_agent_loop.py               ← brand: Implementation name/title, auth
-│   │   └── entrypoint.py                   ← brand: argparse description, greeting
-│   └── setup/
-│       ├── onboarding/
-│       │   ├── __init__.py                 ← brand: setup complete message
-│       │   └── screens/
-│       │       ├── welcome.py              ← brand: WELCOME_HIGHLIGHT
-│       │       └── api_key.py              ← brand: GitHub URL
-│       └── trusted_folders/
-│           └── trust_folder_dialog.py      ← brand: trust dialog message
-└── tests/
-    ├── conftest.py                         ← model name preserved
-    ├── acp/
-    │   ├── test_initialize.py              ← brand: assertion strings
-    │   └── test_acp.py                     ← model name preserved
-    ├── onboarding/
-    │   └── test_run_onboarding.py          ← brand: assertion strings
-    └── update_notifier/
-        ├── test_pypi_update_gateway.py     ← brand: assertion strings
-        └── test_ui_update_notification.py  ← brand: assertion strings
+The following existing call sites and definitions must be modified to wire in the new capabilities. Locators reference the symbol or line range as observed in the current codebase.
+
+- **`vibe/cli/entrypoint.py`** — Argparse construction at `[vibe/cli/entrypoint.py:L134-L146]`. The current mutually-exclusive group has `-c/--continue` (`action="store_true"`) and `--resume SESSION_ID` (`metavar="SESSION_ID"`). Modification: change `--resume` to `action="store_true"` (no metavar); add `--provider` as a sibling argument outside the mutually-exclusive group with `choices=["blitzy", "mistral", "anthropic"]` and `type=str.lower`. The orchestration block immediately following `args = parser.parse_args()` is extended to: (a) if `args.resume` and a session is found, load it and skip provider selection; (b) elif `args.provider` is set, resolve to `Backend` enum and skip the picker; (c) else invoke the provider picker.
+- **`vibe/cli/cli.py`** — `run_cli` orchestration. Modification: accept a pre-resolved `Backend` enum (and an optional restored messages list) from the entrypoint, and pass them through to the existing backend-instantiation path. The existing `load_session` helper (if present) is augmented to consume `SessionManager.load(session_id)` output when `--resume` was used.
+- **`vibe/core/llm/backend/factory.py`** — `BACKEND_FACTORY` dict at `[vibe/core/llm/backend/factory.py:L9-L14]`. Modification: add new import `from vibe.core.llm.backend.blitzy import BlitzyLLMBackend` and a new map entry `Backend.BLITZY: BlitzyLLMBackend`. A new module-level helper `provider_string_to_backend(name: str) -> Backend` is added to translate the lowercase `--provider` string to the enum value (rule 13 — exact string-set match).
+- **`vibe/core/llm/backend/anthropic_llm.py`** — `AnthropicBackend.__init__` at `[vibe/core/llm/backend/anthropic_llm.py:L140-L150]`. The current key resolution at `L144-L148` is `os.getenv(self._provider.api_key_env_var) if self._provider.api_key_env_var else None`. Modification: replace with a call to `vibe.core.llm.api_key_prompt.resolve_or_prompt("anthropic", self._provider.api_key_env_var, "anthropic_api_key", config)`. The provider-name argument feeds the key-masking subsystem in `observability.py` and the `MissingAPIKeyError(provider)` constructor. The request-params assembly site (the `_build_request_params` or equivalent inside `complete`/`complete_streaming`) is augmented to read `config.anthropic_model` and pass it as the `model` parameter to `client.messages.stream()`.
+- **`vibe/core/config.py`** — `Backend` `StrEnum` (currently `MISTRAL, GENERIC, ANTHROPIC, CLAUDE_CODE` at `~L138`). Modification: add `BLITZY = auto()` member. `VibeConfig` (`BaseSettings`, `env_prefix="BLITZY_"`) gains new fields: `blitzy_api_key: SecretStr | None = None`, `anthropic_api_key: SecretStr | None = None`, `mistral_api_key: SecretStr | None = None`, `anthropic_model: str = "claude-sonnet-4-6"`, and `context_limits: ContextLimitsConfig = Field(default_factory=ContextLimitsConfig)`. A new `ContextLimitsConfig` nested model is defined with fields `blitzy: int = 128_000`, `mistral: int = 32_000`, `anthropic: int = 200_000`. `MissingAPIKeyError` is extended with a `provider`-only constructor while preserving the existing `(env_key, provider_name)` signature for backward compatibility. The existing `_check_api_key` validator at `[vibe/core/config.py:_check_api_key]` is left unchanged.
+- **`vibe/core/llm/exceptions.py`** — Existing exceptions hierarchy. Modification: add two new exception classes: `BlitzyConnectionError(repo: str, branch: str, status_code: int | None, url: str)` (raised on non-2xx except 404, or on timeouts, against any Blitzy endpoint) and `SessionNotFoundError(session_id: str)` (raised only when `SessionManager.load(session_id)` is called with an unknown id; the interactive picker path does not raise).
+- **`vibe/core/middleware.py`** — `AutoCompactMiddleware.__init__(self, threshold: int)` at `[vibe/core/middleware.py:L90]`. Modification: extend the constructor signature to accept an optional `provider: Backend` parameter and compute `self.threshold = context_limits[provider] * 0.8` when provided; preserve the existing fixed-threshold path for backward compatibility. The CLI integration site that wires the middleware passes the active provider.
+- **`vibe/setup/onboarding/screens/api_key.py`** — `PROVIDER_HELP` dict literal. Modification: add `"blitzy": ("https://blitzy.com/api-keys", "Blitzy")` and `"anthropic": ("https://console.anthropic.com/settings/keys", "Anthropic Console")`. The screen flow logic is unchanged.
+
+### 0.5.2 Dependency Injections
+
+- **`vibe/cli/cli.py`** — Wires `Backend` enum from picker/`--provider`/`--resume` outcome into the existing factory invocation.
+- **`vibe/core/llm/api_key_prompt.py`** — Receives a `VibeConfig` reference so it can read the relevant `*_api_key` field and write a saved key back via `tomli_w`. Receives the provider string so it can target the right `*_API_KEY` env var name and the right config field name.
+- **`vibe/core/session.py`** — `SessionManager.compact(session, token_limit)` receives a callable handle to the active backend's `complete()` for summarization. Implementation passes the bound method from the running backend instance.
+- **`vibe/core/observability.py`** — Exposes a logging filter that any logger acquired through `logging.getLogger("vibe.*")` automatically uses; the filter is installed at CLI startup. The `correlation_id` context-variable is read by all log records and added to JSON-formatted output.
+
+### 0.5.3 Database/Schema and Storage Updates
+
+The project has no relational database; storage is filesystem-only. Storage additions:
+
+- **New storage root:** `~/.blitzy/sessions/{repo_name}/{branch_name}/` (created on first session save with `mkdir(parents=True, exist_ok=True)`). Filenames: `{session_id}.json` where `session_id` is a UUID4 hex string. When `(repo, branch) == ("", "")` (git context unavailable), the path collapses to `~/.blitzy/sessions/_unknown/_unknown/`.
+- **Session record schema** — defined in §0.2.2 (User Example preserved verbatim). Each record is a single JSON document written by full-overwrite (`open(path, "w")`) after every turn (rule 6). No migration is required because the storage tree is new.
+- **Config file additions** — `~/.blitzy/config.toml` (path `[vibe/core/config.py:GLOBAL_CONFIG_FILE]`) gains optional top-level keys (`blitzy_api_key`, `anthropic_api_key`, `mistral_api_key`, `anthropic_model`) and an optional `[context_limits]` table. The existing file format is preserved; all new keys are optional with defaults.
+- **Existing `~/.blitzy/logs/session/`** (used by `vibe/core/session/session_logger.py` `[vibe/core/session/session_logger.py:SESSION_LOG_DIR]`) is **unchanged**; the new `~/.blitzy/sessions/{repo}/{branch}/` tree is a separate file family.
+
+### 0.5.4 Startup Flow Integration Diagram
+
+The end-to-end startup orchestration after this delivery is captured by the following Mermaid flow.
+
+```mermaid
+flowchart TD
+    A[python -m vibe] --> B[argparse]
+    B --> C{--resume present?}
+    C -- Yes --> D[git_context.detect repo, branch]
+    D --> E[SessionManager.list_sessions]
+    E --> F{sessions found?}
+    F -- Yes --> G[session_picker.select_session]
+    G --> H[Load messages + provider from session JSON]
+    H --> Z[Instantiate backend via factory]
+    F -- No --> I[Print no-sessions notice]
+    I --> J{--provider present?}
+    C -- No --> J
+    J -- Yes --> K[provider_string_to_backend]
+    J -- No --> L[provider_picker.select_provider]
+    L --> K
+    K --> M[api_key_prompt.resolve_or_prompt]
+    M --> N{Key resolved?}
+    N -- No --> X[raise MissingAPIKeyError, exit]
+    N -- Yes --> Z
+    Z --> Y[run_cli loop]
+%% End of startup flow
 ```
 
+### 0.5.5 Per-Turn Flow Integration
 
-## 0.3 Scope Boundaries
+The per-turn loop integrates `SessionManager` and middleware as follows:
 
-### 0.3.1 Exhaustively In Scope
-
-**Source transformations (brand string replacement):**
-- `vibe/core/config.py` — `env_prefix` change from `VIBE_` to `BLITZY_`, documentation comment about `VIBE_*` variables
-- `vibe/core/system_prompt.py` — commit signature text (`Mistral Vibe`, `vibe@mistral.ai`)
-- `vibe/core/utils.py` — user-agent string `Mistral-Vibe/{version}`
-- `vibe/core/paths/global_paths.py` — `_DEFAULT_VIBE_HOME`, `VIBE_HOME` env var, `vibe.log` file name
-- `vibe/core/paths/config_paths.py` — `.vibe/` local config directory references
-- `vibe/core/prompts/cli.md` — system prompt identity text
-- `vibe/core/prompts/tests.md` — test persona text
-- `vibe/cli/entrypoint.py` — argparse description, help text with `~/.vibe/` path
-- `vibe/cli/cli.py` — `Hello Vibe!` history greeting
-- `vibe/cli/textual_ui/app.py` — `mistral-vibe` in update messages and PyPI gateway
-- `vibe/cli/textual_ui/widgets/welcome.py` — banner text, color gradient constants
-- `vibe/cli/update_notifier/update.py` — upgrade command strings
-- `vibe/cli/update_notifier/adapters/github_update_gateway.py` — User-Agent header
-- `vibe/acp/acp_agent_loop.py` — ACP `Implementation` name/title, auth method descriptions
-- `vibe/acp/entrypoint.py` — argparse description, history greeting
-- `vibe/setup/onboarding/__init__.py` — setup complete message
-- `vibe/setup/onboarding/screens/welcome.py` — `WELCOME_HIGHLIGHT` constant
-- `vibe/setup/onboarding/screens/api_key.py` — GitHub documentation URL
-- `vibe/setup/trusted_folders/trust_folder_dialog.py` — trust dialog message
-- `vibe/whats_new.md` — `.vibe` folder reference
-
-**Theme color updates:**
-- `vibe/cli/textual_ui/app.tcss` — full Textual CSS palette replacement with purple-centric colors
-- `vibe/cli/textual_ui/terminal_theme.py` — theme color derivation defaults and fallback accent
-- `vibe/cli/textual_ui/widgets/welcome.py` — `TARGET_COLORS` gradient and `BORDER_TARGET_COLOR` replacement with purple palette
-
-**Test assertion updates:**
-- `tests/acp/test_initialize.py` — `@mistralai/mistral-vibe`, `Mistral Vibe` title, `Mistral Vibe Setup` label assertions
-- `tests/onboarding/test_run_onboarding.py` — `Mistral Vibe CLI` assertion
-- `tests/update_notifier/test_pypi_update_gateway.py` — `mistral-vibe` project name, `mistral_vibe` wheel filename assertions
-- `tests/update_notifier/test_ui_update_notification.py` — `mistral-vibe` in update notification assertions
-
-**Configuration and packaging updates:**
-- `pyproject.toml` — name, description, keywords, authors, URLs, scripts
-- `action.yml` — GitHub Action name, description, author, step names
-- `flake.nix` — description string
-- `vibe-acp.spec` — exe display name
-
-**Documentation updates:**
-- `README.md` — all `Mistral Vibe`, `mistral-vibe`, `Mistral AI`, `~/.vibe/`, `vibe` command references
-- `CONTRIBUTING.md` — all brand references
-- `CHANGELOG.md` — `mistral-vibe` entry reference
-- `docs/README.md` — title and link references
-- `docs/acp-setup.md` — brand references and ACP config snippet examples
-
-**CI/CD and distribution updates:**
-- `.github/CODEOWNERS` — team reference
-- `.github/ISSUE_TEMPLATE/bug-report.yml` — brand references
-- `.github/ISSUE_TEMPLATE/config.yml` — URLs and brand references
-- `.github/ISSUE_TEMPLATE/feature-request.yml` — brand references
-- `.github/workflows/build-and-upload.yml` — repository check string
-- `.github/workflows/release.yml` — PyPI and Zed references
-- `distribution/zed/extension.toml` — id, name, author, URLs, agent server names
-- `scripts/install.sh` — installation references
-- `scripts/prepare_release.py` — remote URL
-
-**Import path corrections:**
-- No import path changes required — the `vibe/` package directory is preserved
-- Only string-literal brand replacements within existing files
-
-### 0.3.2 Explicitly Out of Scope
-
-The following are explicitly excluded from modification per the user's preservation requirements:
-
-- **Internal Python identifiers:** `VibeConfig`, `VibeApp`, `AgentLoop`, `VibeAcpAgentLoop`, or any class/function/variable name
-- **The `vibe/` package directory name** — the directory remains `vibe/`, not renamed
-- **Internal constants:** `VIBE_ROOT` (defined in `vibe/__init__.py`), `VIBE_STOP_EVENT_TAG`, `VIBE_WARNING_TAG` (defined in `vibe/core/utils.py`)
-- **External API provider references:**
-  - `"mistral"` as a provider name in `DEFAULT_PROVIDERS` (refers to the Mistral API service)
-  - `MISTRAL_API_KEY` environment variable (external API credential)
-  - `api.mistral.ai` and `codestral.mistral.ai` (external API endpoints)
-  - `Mistral AI Studio` label in `vibe/setup/onboarding/screens/api_key.py` line 21 (refers to the external console)
-  - The `mistralai` Python SDK package dependency
-- **LLM model names:** `mistral-vibe-cli-latest`, `devstral-2`, `devstral-small`, `devstral-small-latest`, `devstral` (these are model identifiers, not app branding)
-- **Functional behavior:** No tool, agent, middleware, backend, or protocol behavior changes
-- **Config file formats:** TOML config format, session log format, ACP protocol schema unchanged
-- **Test logic or test structure:** Only assertion strings with old branding are updated
-- **The `tests/conftest.py` base config model name** `mistral-vibe-cli-latest` — this is a model name, not app branding
-- **The `tests/acp/test_acp.py` model name check** — `mistral-vibe-cli-latest` is a model identifier
-
-
-## 0.4 Target Design
-
-### 0.4.1 Refactored Structure Planning
-
-The target structure preserves the identical directory layout — no files are moved, created, or deleted. Only in-place content modifications are applied. The complete list of files with their modification nature:
-
-```
-Target (all files are in-place updates — no structural changes):
-.
-├── pyproject.toml                          ← UPDATE: name→blitzy-agent, scripts→blitzy/blitzy-acp
-├── action.yml                              ← UPDATE: name→Blitzy Agent, author→Blitzy
-├── flake.nix                               ← UPDATE: description→Blitzy Agent
-├── vibe-acp.spec                           ← UPDATE: name→blitzy-acp
-├── README.md                               ← UPDATE: all brand strings
-├── CONTRIBUTING.md                         ← UPDATE: all brand strings
-├── CHANGELOG.md                            ← UPDATE: brand string in entry
-├── .github/
-│   ├── CODEOWNERS                          ← UPDATE: team→@blitzy/blitzy-agent
-│   ├── ISSUE_TEMPLATE/
-│   │   ├── bug-report.yml                  ← UPDATE: brand strings
-│   │   ├── config.yml                      ← UPDATE: URLs and brand strings
-│   │   └── feature-request.yml             ← UPDATE: brand strings
-│   └── workflows/
-│       ├── build-and-upload.yml            ← UPDATE: repo check string
-│       └── release.yml                     ← UPDATE: PyPI/Zed references
-├── distribution/
-│   └── zed/
-│       └── extension.toml                  ← UPDATE: id, name, author, all URLs
-├── docs/
-│   ├── README.md                           ← UPDATE: brand strings and links
-│   └── acp-setup.md                        ← UPDATE: brand strings and config examples
-├── scripts/
-│   ├── install.sh                          ← UPDATE: brand and install references
-│   └── prepare_release.py                  ← UPDATE: remote URL
-├── vibe/
-│   ├── whats_new.md                        ← UPDATE: .vibe → .blitzy
-│   ├── core/
-│   │   ├── config.py                       ← UPDATE: env_prefix VIBE_→BLITZY_
-│   │   ├── system_prompt.py                ← UPDATE: commit signature branding
-│   │   ├── utils.py                        ← UPDATE: user-agent string
-│   │   ├── paths/
-│   │   │   ├── global_paths.py             ← UPDATE: ~/.vibe→~/.blitzy, VIBE_HOME→BLITZY_HOME
-│   │   │   └── config_paths.py             ← UPDATE: .vibe/→.blitzy/ local paths
-│   │   └── prompts/
-│   │       ├── cli.md                      ← UPDATE: identity prompt text
-│   │       └── tests.md                    ← UPDATE: identity persona text
-│   ├── cli/
-│   │   ├── entrypoint.py                   ← UPDATE: argparse description, help text
-│   │   ├── cli.py                          ← UPDATE: Hello Vibe!→Hello Blitzy!
-│   │   ├── textual_ui/
-│   │   │   ├── app.py                      ← UPDATE: package name in update messages
-│   │   │   ├── app.tcss                    ← UPDATE: purple-centric palette
-│   │   │   ├── terminal_theme.py           ← UPDATE: accent color defaults
-│   │   │   └── widgets/
-│   │   │       └── welcome.py              ← UPDATE: banner text + purple gradient
-│   │   └── update_notifier/
-│   │       ├── update.py                   ← UPDATE: upgrade command strings
-│   │       └── adapters/
-│   │           └── github_update_gateway.py ← UPDATE: User-Agent
-│   ├── acp/
-│   │   ├── acp_agent_loop.py               ← UPDATE: Implementation name/title
-│   │   └── entrypoint.py                   ← UPDATE: argparse description, greeting
-│   └── setup/
-│       ├── onboarding/
-│       │   ├── __init__.py                 ← UPDATE: setup complete message
-│       │   └── screens/
-│       │       ├── welcome.py              ← UPDATE: WELCOME_HIGHLIGHT
-│       │       └── api_key.py              ← UPDATE: GitHub URL only
-│       └── trusted_folders/
-│           └── trust_folder_dialog.py      ← UPDATE: trust dialog message
-└── tests/
-    ├── acp/
-    │   └── test_initialize.py              ← UPDATE: assertion strings
-    ├── onboarding/
-    │   └── test_run_onboarding.py          ← UPDATE: assertion strings
-    └── update_notifier/
-        ├── test_pypi_update_gateway.py     ← UPDATE: assertion strings
-        └── test_ui_update_notification.py  ← UPDATE: assertion strings
+```mermaid
+flowchart LR
+    A[User input] --> B[Append LLMMessage to session.messages]
+    B --> C[AutoCompactMiddleware.before_turn]
+    C --> D{tokens >= 80 percent of context_limit?}
+    D -- Yes --> E[SessionManager.compact session, limit]
+    E --> F[backend.complete_streaming]
+    D -- No --> F
+    F --> G[Append assistant LLMMessage]
+    G --> H[SessionManager.save full overwrite]
+    H --> I[observability.metrics.increment turns_completed]
+    I --> J[Wait for next input]
+%% End of per-turn flow
 ```
 
-### 0.4.2 Design Pattern Applications
+The estimator used by both `AutoCompactMiddleware` (when receiving an explicit override) and `SessionManager.compact` is the user-mandated `len(json.dumps(messages)) // 4`. The 80% threshold is computed from the active provider's `context_limits.<provider>` value at session-construction time.
 
-This rebranding exercise applies two core design patterns:
+## 0.6 Technical Implementation
 
-- **Find-and-replace with exclusion boundaries:** Every substitution follows the brand mapping table with strict exclusion rules for preserved identifiers (model names, API provider references, internal constants). The approach is deterministic — each old string maps to exactly one new string
-- **Minimal Change Clause compliance:** Every edit is validated as either a direct brand string replacement or a theme color change. No refactoring, feature additions, or opportunistic improvements are permitted
+This section is the authoritative file-by-file execution plan. Every file listed here MUST be created or modified in the final delivery; no file may be left unaddressed.
 
-### 0.4.3 Theme Specification
+### 0.6.1 File-by-File Execution Plan
 
-The purple-centric Textual CSS palette is anchored on primary accent `#5B39F3` with the following derived values:
+**Group 1 — New Foundation Modules**
 
-| Token | Value | Purpose |
-|---|---|---|
-| Primary accent | `#5B39F3` | Primary interactive elements, focus ring |
-| Accent hover | `#7C5DF5` | Lighter variant for hover states |
-| Accent active | `#4A2DD4` | Darker variant for active/pressed states |
-| Muted/secondary | `#8B7FC7` | Desaturated purple for secondary text |
-| Border | Muted purple derived from `#5B39F3` at reduced opacity | Border accents |
-| Text on accent | `#FFFFFF` | White text on purple backgrounds |
-| Surface/background | Dark neutrals with subtle purple undertone | Panel and surface backgrounds |
-| Error/warning/success | Preserved existing semantic colors | Unless they clash with purple palette |
+- **CREATE** `vibe/core/git_context.py` — Pure-Python git context detector. Public surface: `detect() -> tuple[str, str]` returning `(repo, branch)`. Implementation reads `.git/HEAD` (parses `ref: refs/heads/<branch>`; on a detached HEAD or read error returns empty branch); reads `.git/config` (parses INI sections; finds `[remote "origin"]` and its `url = ...` line; strips trailing `.git`; takes the final path segment). Catches every `OSError` and returns `("", "")` silently — never raises (rule 3). No subprocess invocation.
+- **CREATE** `vibe/core/session.py` — `SessionManager` class. Public surface: `save(session: SessionRecord) -> Path`, `load(session_id: str) -> SessionRecord`, `list_sessions(repo: str, branch: str) -> list[SessionRecord]` (sorted by `created_at` descending), `compact(session: SessionRecord, token_limit: int, complete_fn: Callable) -> SessionRecord`. Storage root resolves through `VIBE_HOME` env var → `~/.blitzy` default, then `/sessions/{repo}/{branch}/`. `SessionRecord` is a Pydantic model matching the user-specified JSON schema exactly. Token estimation: `len(json.dumps(self.messages)) // 4`. Compaction strategy: take the oldest half of messages, hand them to `complete_fn` with a summarization system prompt, receive the summary text, replace the oldest half with a single `LLMMessage(role=Role.system, content=summary)`, set `compacted_summary` on the record, and return.
+- **CREATE** `vibe/core/llm/backend/blitzy.py` — `BlitzyLLMBackend` class implementing `BackendLike`. `__init__`: stores provider config, api key, repo, branch; constructs an `httpx.AsyncClient` with the dual timeouts (`httpx.Timeout(connect=10.0, read=3600.0, write=10.0, pool=10.0)`). `__aenter__`: performs context check `GET https://api.blitzy.com/context?repo={repo}&branch={branch}` with a 5s timeout; HTTP 200 → `connected = True`; HTTP 404 → `connected = False` (no exception per rule 8); any other non-2xx or timeout → `BlitzyConnectionError(repo, branch, status_code, url)`. First call to `complete`/`complete_streaming` prints `f"Connected to {repo}({branch})"` or `"no repository connected"` once. `complete_streaming`: `POST https://api.blitzy.com/v1/api/chat` with header `X-API-Key: {key}` and body `{"messages": [...], "repo": repo, "branch": branch}`. SSE parser reads lines until `\n\n`, strips `data: ` prefix, JSON-decodes, extracts content with field priority `content → text → message → delta.content`, and `yield`s `LLMChunk` per content fragment; events with none of the fields are skipped silently. Uses only `httpx` (rule 9).
+- **CREATE** `vibe/core/llm/api_key_prompt.py` — Shared API key resolver. Signature: `def resolve_or_prompt(provider: str, env_var: str | None, config_field: str, config: VibeConfig) -> str`. Order: env var (via `os.getenv`) → `getattr(config, config_field)` (SecretStr → str) → interactive prompt using `getpass.getpass(f"{provider.title()} API key: ")`. After a successful interactive entry, asks `"Save to ~/.blitzy/config.toml? [y/N] "`; on `y` writes the key back using `tomli_w`. If the user enters an empty string at the prompt, raises `MissingAPIKeyError(provider)` (rule 10). The resolver attaches a sensitive-value marker so that `observability.py`'s log filter can scrub the value (rule 2).
+- **CREATE** `vibe/core/observability.py` — Structured-logging adapter for the CLI. Exposes: `correlation_id: contextvars.ContextVar[str]`, `set_correlation_id(value) -> Token`, `@contextmanager span(name: str, **attrs)` (records duration into `_metrics`), `KEY_MASK_FILTER` (a `logging.Filter` subclass that walks `record.msg` and `record.args` substituting any registered sensitive value with `***`), `register_sensitive(value: str)`, `metrics_snapshot() -> dict`, and `is_ready() -> bool`. Logs are JSON-formatted with fields `ts, level, logger, msg, correlation_id, span, attrs`. Per-session correlation IDs are set in `run_cli` before the first turn. (Observability project rule.)
+- **CREATE** `vibe/core/llm/exceptions.py` additions — `BlitzyConnectionError` and `SessionNotFoundError` defined alongside the existing exceptions. These do not replace existing classes; they extend the module.
 
-The `WelcomeBanner` widget gradient colors will shift from the current orange palette (`#FFD800` → `#E10500`) to a purple-centric gradient derived from `#5B39F3` (e.g., `#7C5DF5` → `#5B39F3` → `#4A2DD4` → `#3A1FB5` → `#2A0F96`).
+**Group 2 — CLI UX**
 
-### 0.4.4 User Interface Design
+- **CREATE** `vibe/cli/provider_picker.py` — `select_provider() -> Backend`. Prints the four-line prompt verbatim per User Example in §0.2.2. Reads a single line from stdin via `input()`. Validates: empty → Blitzy; `"1"` or `"blitzy"` → Blitzy; `"2"` or `"mistral"` → Mistral; `"3"` or `"anthropic"` → Anthropic; otherwise prints `"Invalid choice. Please enter 1, 2, or 3."` and reprompts (bounded retry). Case-insensitive token matching via `.lower()`.
+- **CREATE** `vibe/cli/session_picker.py` — `select_session(repo: str, branch: str) -> tuple[SessionRecord | None, Backend | None]`. Calls `SessionManager.list_sessions(repo, branch)`. Empty → prints `f"No previous sessions found for {repo}({branch}) — starting new session"` and returns `(None, None)`. Non-empty → renders a numbered list with columns `short_id` (first 8 chars), `created_at` (ISO 8601), `provider`, `len(messages)`; reads selection; returns `(SessionRecord, Backend)` derived from the record's `provider` field via the same enum mapping used by `provider_string_to_backend` (rule 13).
+- **UPDATE** `vibe/cli/entrypoint.py` — Replace the existing `--resume SESSION_ID` form `[vibe/cli/entrypoint.py:L143-L146]` with `action="store_true"`. Add `--provider` argument with `choices=["blitzy","mistral","anthropic"]`, `type=str.lower`, `default=None`. Insert a new orchestration block after `args = parser.parse_args()` that calls `select_session` when `args.resume`, else `select_provider` when not `args.provider`, then resolves the API key via `resolve_or_prompt`. Passes the resolved `Backend` and optional restored session into `run_cli`.
+- **UPDATE** `vibe/cli/cli.py` — `run_cli` accepts new keyword arguments `backend: Backend`, `restored_session: SessionRecord | None`. When `restored_session` is provided, hydrates the conversation context from `restored_session.messages` and skips the empty-session initialization. Wires `SessionManager.save` into the per-turn finalization hook. Wires `AutoCompactMiddleware(provider=backend, context_limits=config.context_limits)` into the middleware chain. Sets `observability.set_correlation_id(session_id)` at startup.
 
-The rebranding affects the following user-facing surfaces:
+**Group 3 — Factory & Backend Extension**
 
-- **Welcome banner:** Displays "Blitzy Agent v{version}" with purple gradient animation instead of "Mistral Vibe v{version}" with orange gradient
-- **Onboarding welcome screen:** The `WELCOME_HIGHLIGHT` text changes from "Mistral Vibe" to "Blitzy Agent"
-- **Trust folder dialog:** Message changes from "Files that can modify your Mistral Vibe setup" to "Files that can modify your Blitzy Agent setup"
-- **CLI help text:** `blitzy --help` outputs description containing "Blitzy Agent" and `~/.blitzy/agents/` path
-- **ACP initialization:** The `agent_info` Implementation reports `name="@blitzy/blitzy-agent"`, `title="Blitzy Agent"`
-- **Commit signature:** Reads `Generated by Blitzy Agent.` and `Co-Authored-By: Blitzy Agent <agent@blitzy.com>`
-- **Update notifications:** Reference `blitzy-agent` package name and `uv tool upgrade blitzy-agent` command
-- **Session resume hint:** Prints `blitzy --continue` and `blitzy --resume {session_id}`
+- **UPDATE** `vibe/core/llm/backend/factory.py` — Add import for `BlitzyLLMBackend`; add `Backend.BLITZY: BlitzyLLMBackend` entry to `BACKEND_FACTORY` `[vibe/core/llm/backend/factory.py:L9-L14]`. Add helper `provider_string_to_backend(name: str) -> Backend` with an exhaustive `{"blitzy": Backend.BLITZY, "mistral": Backend.MISTRAL, "anthropic": Backend.ANTHROPIC}` map (rule 13).
+- **UPDATE** `vibe/core/llm/backend/anthropic_llm.py` — In `AnthropicBackend.__init__` `[vibe/core/llm/backend/anthropic_llm.py:L140-L150]`, replace the env-only key lookup with `resolve_or_prompt("anthropic", self._provider.api_key_env_var, "anthropic_api_key", config)`. Inject `config` via `__init__` parameter. In request param assembly, read `config.anthropic_model` and forward it as the SDK `model` argument; default `"claude-sonnet-4-6"` (verified current model identifier, §0.10). Add `from vibe.core.llm.api_key_prompt import resolve_or_prompt`.
 
+**Group 4 — Config**
 
-## 0.5 Transformation Mapping
+- **UPDATE** `vibe/core/config.py` — Extend `Backend` enum with `BLITZY = auto()`. Define `ContextLimitsConfig(BaseModel)` with fields `blitzy: int = 128_000`, `mistral: int = 32_000`, `anthropic: int = 200_000`. Extend `VibeConfig` with `blitzy_api_key`, `anthropic_api_key`, `mistral_api_key`, `anthropic_model`, `context_limits`. Extend `MissingAPIKeyError` to support `MissingAPIKeyError(provider)` (single positional) while preserving the existing `(env_key, provider_name)` signature; the existing `_check_api_key` validator is not modified.
+- **UPDATE** `vibe/setup/onboarding/screens/api_key.py` — Extend `PROVIDER_HELP` dict with `"blitzy"` and `"anthropic"` entries (URLs and display labels).
 
-### 0.5.1 File-by-File Transformation Plan
-
-Every target file is mapped to its source with specific key changes. All transformations are UPDATE mode (in-place modification of existing files). The entire refactor executes in ONE phase.
+**Group 5 — Middleware**
 
-**Package Metadata and Build Configuration:**
+- **UPDATE** `vibe/core/middleware.py` — `AutoCompactMiddleware.__init__` `[vibe/core/middleware.py:L90]` gains optional kwargs `provider: Backend | None = None`, `context_limits: ContextLimitsConfig | None = None`; when both are supplied, `self.threshold = getattr(context_limits, provider.value) * 0.8` (rounded). The `before_turn` body is unchanged in shape; the COMPACT action is dispatched as before, but the metadata payload also includes `{"provider": provider.value, "threshold": self.threshold}` for observability.
 
-| Target File | Transformation | Source File | Key Changes |
-|---|---|---|---|
-| `pyproject.toml` | UPDATE | `pyproject.toml` | `name = "mistral-vibe"` → `"blitzy-agent"`, `description` → `"Minimal CLI coding agent by Blitzy"`, `authors` → `[{ name = "Blitzy" }]`, `keywords` remove `"mistral"` add `"blitzy"`, `Homepage`/`Repository`/`Issues`/`Documentation` URLs → `blitzy/blitzy-agent`, `scripts` → `blitzy = "vibe.cli.entrypoint:main"` and `blitzy-acp = "vibe.acp.entrypoint:main"` |
-| `action.yml` | UPDATE | `action.yml` | `name: Mistral Vibe` → `Blitzy Agent`, `description` → `"Download, install, and run Blitzy Agent"`, `author: Mistral AI` → `Blitzy`, step names `Install Mistral Vibe` → `Install Blitzy Agent`, `Run Mistral Vibe` → `Run Blitzy Agent`, `id: run-mistral-vibe` → `run-blitzy-agent`, `vibe \` → `blitzy \` in run command |
-| `flake.nix` | UPDATE | `flake.nix` | `description = "Mistral Vibe!"` → `"Blitzy Agent!"`, `pythonSet.mistral-vibe` → `pythonSet.blitzy-agent` |
-| `vibe-acp.spec` | UPDATE | `vibe-acp.spec` | `name='vibe-acp'` → `'blitzy-acp'` |
+**Group 6 — Tests** (full list documented in §0.3.3)
 
-**Core Runtime — Brand Strings:**
+- **CREATE** `tests/test_git_context.py`, `tests/test_session_manager.py`, `tests/test_context_limits.py`, `tests/test_api_key_masking.py`, `tests/test_backend_conformance.py`
+- **CREATE** `tests/backend/test_blitzy_backend.py`, `tests/backend/test_anthropic_backend_extension.py`
+- **CREATE** `tests/cli/test_provider_selection.py`, `tests/cli/test_resume_flow.py`
 
-| Target File | Transformation | Source File | Key Changes |
-|---|---|---|---|
-| `vibe/core/config.py` | UPDATE | `vibe/core/config.py` | Line 402: `env_prefix="VIBE_"` → `env_prefix="BLITZY_"`, Line 452: update comment `VIBE_*` → `BLITZY_*` |
-| `vibe/core/system_prompt.py` | UPDATE | `vibe/core/system_prompt.py` | Line 364: `"generated by Mistral Vibe"` → `"generated by Blitzy Agent"`, Line 368: `"Generated by Mistral Vibe.\n"` → `"Generated by Blitzy Agent.\n"`, Line 369: `"Co-Authored-By: Mistral Vibe <vibe@mistral.ai>\n"` → `"Co-Authored-By: Blitzy Agent <agent@blitzy.com>\n"` |
-| `vibe/core/utils.py` | UPDATE | `vibe/core/utils.py` | Line 151: `f"Mistral-Vibe/{__version__}"` → `f"Blitzy-Agent/{__version__}"` |
-| `vibe/core/paths/global_paths.py` | UPDATE | `vibe/core/paths/global_paths.py` | Line 19: `Path.home() / ".vibe"` → `Path.home() / ".blitzy"`, Line 23: `os.getenv("VIBE_HOME")` → `os.getenv("BLITZY_HOME")`, Line 38: `"vibe.log"` → `"blitzy.log"` |
-| `vibe/core/paths/config_paths.py` | UPDATE | `vibe/core/paths/config_paths.py` | Lines 26, 29: `cwd / ".vibe" / basename` → `cwd / ".blitzy" / basename`, Lines 37, 45, 53: `dir / ".vibe" / "tools"`, `"skills"`, `"agents"` → `dir / ".blitzy" / ...` |
+**Group 7 — Rule-Mandated Artifacts**
 
-**Core Runtime — Prompt Templates:**
+- **CREATE** `blitzy/llm-provider-selection-session-persistence.html` — single self-contained reveal.js HTML file with pinned CDN versions (reveal.js 5.1.0, Mermaid 11.4.0, Lucide 0.460.0). 16 slides (target): (1) Title hero gradient, (2) headline summary KPIs, (3) startup flow Mermaid diagram, (4) divider — Provider Selection, (5) Provider Selection details, (6) divider — Anthropic Backend, (7) Anthropic key resolution flow, (8) divider — Session Persistence, (9) Session storage layout diagram, (10) Auto-compaction flow Mermaid, (11) divider — Risks and Mitigations, (12) Risk table, (13) divider — Onboarding, (14) Developer onboarding bullets, (15) Validation framework table, (16) Closing slide on navy `#1A105F` with brand lockup and three-bullet next-step. Every slide carries at least one non-text visual (KPI card, Lucide icon row, Mermaid diagram, or styled table). No emoji; CSS custom properties match the Blitzy brand tokens listed in the Executive Presentation rule. Mermaid initialized with `startOnLoad: false`; `mermaid.run()` invoked on reveal.js `ready` and `slidechanged`; `lucide.createIcons()` invoked on the same events.
+- **CREATE** `docs/observability/dashboard.json` — JSON manifest describing log queries (correlation_id-grouped, error-rate by provider, key-mask-violation counter), metric panels (turns per minute, compaction count, p99 LLM latency by provider), trace views (span breakdown for `provider.connect`, `llm.complete`, `session.save`, `session.compact`), and health summary (readiness state per backend).
 
-| Target File | Transformation | Source File | Key Changes |
-|---|---|---|---|
-| `vibe/core/prompts/cli.md` | UPDATE | `vibe/core/prompts/cli.md` | Line 1: `"Mistral Vibe, a CLI coding-agent built by Mistral AI"` → `"Blitzy Agent, a CLI coding-agent built by Blitzy"` |
-| `vibe/core/prompts/tests.md` | UPDATE | `vibe/core/prompts/tests.md` | Line 1: `"You are Vibe"` → `"You are Blitzy Agent"` |
+### 0.6.2 Implementation Approach per File
 
-**CLI Entry Points and UI:**
+- **Establish feature foundation** by creating `git_context.py`, `session.py`, `blitzy.py`, `api_key_prompt.py`, and `observability.py` in that order. Each is independently unit-testable.
+- **Integrate with existing systems** by modifying `factory.py`, `anthropic_llm.py`, `config.py`, `middleware.py`, `entrypoint.py`, and `cli.py` after the foundation modules pass their unit tests, so the integration steps consume known-good primitives.
+- **Ensure quality** by implementing the test suite incrementally as each module lands; the backend conformance test in `tests/test_backend_conformance.py` gates the factory change (rule 1).
+- **Document usage and configuration** by producing the executive presentation HTML and the dashboard JSON; these are independent of code-path correctness but are non-negotiable per project rules.
+- **API key masking discipline** is enforced by routing all sensitive value access through `api_key_prompt.resolve_or_prompt`, which registers the value with `observability.register_sensitive(value)` immediately after acquisition; subsequent logging, exception construction, and traceback formatting pass through the registered mask filter.
 
-| Target File | Transformation | Source File | Key Changes |
-|---|---|---|---|
-| `vibe/cli/entrypoint.py` | UPDATE | `vibe/cli/entrypoint.py` | Line 21: `"Run the Mistral Vibe interactive CLI"` → `"Run the Blitzy Agent interactive CLI"`, Line 77: `~/.vibe/agents/` → `~/.blitzy/agents/`, Line 109: `"vibe from"` → `"blitzy from"` |
-| `vibe/cli/cli.py` | UPDATE | `vibe/cli/cli.py` | Line 70: `"Hello Vibe!\n"` → `"Hello Blitzy!\n"` |
-| `vibe/cli/textual_ui/app.py` | UPDATE | `vibe/cli/textual_ui/app.py` | Line 1224: `"mistral-vibe"` → `"blitzy-agent"` in update message, Line 1252: `project_name="mistral-vibe"` → `project_name="blitzy-agent"`, Lines 1264-1265: `"vibe --continue"` → `"blitzy --continue"`, `"vibe --resume"` → `"blitzy --resume"` |
-| `vibe/cli/textual_ui/app.tcss` | UPDATE | `vibe/cli/textual_ui/app.tcss` | Replace the `WelcomeBanner` border color and add purple-centric theme variable overrides. The `app.tcss` file uses Textual `$variable` tokens — ensure the theme definition feeds the purple palette through Textual's theming system |
-| `vibe/cli/textual_ui/terminal_theme.py` | UPDATE | `vibe/cli/textual_ui/terminal_theme.py` | Update the `capture_terminal_theme()` function's fallback/default `Theme` construction: change `accent=colors.magenta or fg` to use `#5B39F3` as the accent color, and `primary=colors.blue or fg` to reflect the purple primary. Ensure the default theme aligns with the purple palette |
-| `vibe/cli/textual_ui/widgets/welcome.py` | UPDATE | `vibe/cli/textual_ui/widgets/welcome.py` | Line 47: `TARGET_COLORS` replace orange gradient `("#FFD800", "#FFAF00", "#FF8205", "#FA500F", "#E10500")` → purple gradient (e.g., `("#7C5DF5", "#6B4AF0", "#5B39F3", "#4A2DD4", "#3A1FB5")`), Line 48: `BORDER_TARGET_COLOR = "#b05800"` → a purple border color (e.g., `"#5B39F3"`), Line 97: `"Mistral Vibe v{version}"` → `"Blitzy Agent v{version}"` |
+### 0.6.3 User Interface Design
 
-**Update Notifier:**
+The user interface is restricted to two CLI prompts. No TUI layout changes are required (Boundary directive: "Existing TUI layout: no changes beyond provider selection prompt and session picker at startup").
 
-| Target File | Transformation | Source File | Key Changes |
-|---|---|---|---|
-| `vibe/cli/update_notifier/update.py` | UPDATE | `vibe/cli/update_notifier/update.py` | Line 125: `["uv tool upgrade mistral-vibe", "brew upgrade mistral-vibe"]` → `["uv tool upgrade blitzy-agent", "brew upgrade blitzy-agent"]` |
-| `vibe/cli/update_notifier/adapters/github_update_gateway.py` | UPDATE | `vibe/cli/update_notifier/adapters/github_update_gateway.py` | Line 34: `"mistral-vibe-update-notifier"` → `"blitzy-agent-update-notifier"` |
+**Provider selection prompt** (matches User Example verbatim):
 
-**ACP Layer:**
+```plaintext
+Select LLM provider:
+[1] Blitzy  (default)
+[2] Mistral
+[3] Anthropic
+>
+```
 
-| Target File | Transformation | Source File | Key Changes |
-|---|---|---|---|
-| `vibe/acp/acp_agent_loop.py` | UPDATE | `vibe/acp/acp_agent_loop.py` | Line 135: `"Register your API Key inside Mistral Vibe"` → `"Register your API Key inside Blitzy Agent"`, Line 140: `"label": "Mistral Vibe Setup"` → `"label": "Blitzy Agent Setup"`, Line 158: `name="@mistralai/mistral-vibe"` → `name="@blitzy/blitzy-agent"`, Line 159: `title="Mistral Vibe"` → `title="Blitzy Agent"` |
-| `vibe/acp/entrypoint.py` | UPDATE | `vibe/acp/entrypoint.py` | Line 25: `"Run Mistral Vibe in ACP mode"` → `"Run Blitzy Agent in ACP mode"`, Line 45: `"Hello Vibe!\n"` → `"Hello Blitzy!\n"` |
+- Enter (empty input) → option 1 (Blitzy).
+- Input is whitespace-trimmed and lowercased; accepted: `1|blitzy|2|mistral|3|anthropic`.
+- Invalid input reprompts with `"Invalid choice. Please enter 1, 2, or 3."`.
 
-**Setup and Onboarding:**
+**Session picker prompt** (rendered when `--resume` is passed and sessions exist):
 
-| Target File | Transformation | Source File | Key Changes |
-|---|---|---|---|
-| `vibe/setup/onboarding/__init__.py` | UPDATE | `vibe/setup/onboarding/__init__.py` | Line 54: `'Run "vibe" to start using the Mistral Vibe CLI.'` → `'Run "blitzy" to start using the Blitzy Agent CLI.'` |
-| `vibe/setup/onboarding/screens/welcome.py` | UPDATE | `vibe/setup/onboarding/screens/welcome.py` | Line 15: `WELCOME_HIGHLIGHT = "Mistral Vibe"` → `WELCOME_HIGHLIGHT = "Blitzy Agent"` |
-| `vibe/setup/onboarding/screens/api_key.py` | UPDATE | `vibe/setup/onboarding/screens/api_key.py` | Line 24: `"https://github.com/mistralai/mistral-vibe?tab=readme-ov-file#configuration"` → `"https://github.com/blitzy/blitzy-agent?tab=readme-ov-file#configuration"` |
-| `vibe/setup/trusted_folders/trust_folder_dialog.py` | UPDATE | `vibe/setup/trusted_folders/trust_folder_dialog.py` | Line 61: `"Files that can modify your Mistral Vibe setup"` → `"Files that can modify your Blitzy Agent setup"` |
-
-**Release Notes:**
-
-| Target File | Transformation | Source File | Key Changes |
-|---|---|---|---|
-| `vibe/whats_new.md` | UPDATE | `vibe/whats_new.md` | Line 3: `".vibe folder"` → `".blitzy folder"` |
-
-**Documentation:**
-
-| Target File | Transformation | Source File | Key Changes |
-|---|---|---|---|
-| `README.md` | UPDATE | `README.md` | All `Mistral Vibe` → `Blitzy Agent`, `mistral-vibe` → `blitzy-agent`, `Mistral AI` (as author) → `Blitzy`, `mistralai/mistral-vibe` → `blitzy/blitzy-agent`, `~/.vibe/` → `~/.blitzy/`, `vibe` (CLI cmd) → `blitzy`, `vibe-acp` → `blitzy-acp`, preserve `Mistral's models` / `api.mistral.ai` references |
-| `CONTRIBUTING.md` | UPDATE | `CONTRIBUTING.md` | All `Mistral Vibe` → `Blitzy Agent`, `mistral-vibe` directory → `blitzy-agent` |
-| `CHANGELOG.md` | UPDATE | `CHANGELOG.md` | `mistral-vibe` → `blitzy-agent` in applicable entries |
-| `docs/README.md` | UPDATE | `docs/README.md` | `Mistral Vibe` → `Blitzy Agent`, URL references |
-| `docs/acp-setup.md` | UPDATE | `docs/acp-setup.md` | `Mistral Vibe` → `Blitzy Agent`, `vibe-acp` → `blitzy-acp`, config snippet names `"Mistral Vibe"` → `"Blitzy Agent"`, `mistral-vibe` Zed extension → `blitzy-agent` |
-
-**CI/CD and Distribution:**
-
-| Target File | Transformation | Source File | Key Changes |
-|---|---|---|---|
-| `.github/CODEOWNERS` | UPDATE | `.github/CODEOWNERS` | `@mistralai/mistral-vibe` → `@blitzy/blitzy-agent` |
-| `.github/ISSUE_TEMPLATE/bug-report.yml` | UPDATE | `.github/ISSUE_TEMPLATE/bug-report.yml` | `Mistral Vibe` → `Blitzy Agent`, `mistral-vibe` → `blitzy-agent` |
-| `.github/ISSUE_TEMPLATE/config.yml` | UPDATE | `.github/ISSUE_TEMPLATE/config.yml` | `Mistral AI` → `Blitzy`, `docs.mistral.ai/mistral-vibe` → `docs.blitzy.com/blitzy-agent`, `Mistral Vibe` → `Blitzy Agent` |
-| `.github/ISSUE_TEMPLATE/feature-request.yml` | UPDATE | `.github/ISSUE_TEMPLATE/feature-request.yml` | `Mistral Vibe` → `Blitzy Agent` |
-| `.github/workflows/build-and-upload.yml` | UPDATE | `.github/workflows/build-and-upload.yml` | `"mistralai/mistral-vibe"` → `"blitzy/blitzy-agent"` |
-| `.github/workflows/release.yml` | UPDATE | `.github/workflows/release.yml` | `mistral-vibe` → `blitzy-agent` throughout |
-| `distribution/zed/extension.toml` | UPDATE | `distribution/zed/extension.toml` | `id = "mistral-vibe"` → `"blitzy-agent"`, `name = "Mistral Vibe"` → `"Blitzy Agent"`, `authors = ["Mistral AI"]` → `["Blitzy"]`, repository URL, all `agent_servers.mistral-vibe` section keys → `agent_servers.blitzy-agent`, archive URLs → `blitzy/blitzy-agent`, `icon = "./icons/mistral_vibe.svg"` → update to appropriate icon reference |
-| `scripts/install.sh` | UPDATE | `scripts/install.sh` | `Mistral Vibe` → `Blitzy Agent`, `mistral-vibe` → `blitzy-agent`, `vibe, vibe-acp` → `blitzy, blitzy-acp` |
-| `scripts/prepare_release.py` | UPDATE | `scripts/prepare_release.py` | `"git@github.com:mistralai/mistral-vibe.git"` → `"git@github.com:blitzy/blitzy-agent.git"` |
-
-**Test Assertion Strings:**
-
-| Target File | Transformation | Source File | Key Changes |
-|---|---|---|---|
-| `tests/acp/test_initialize.py` | UPDATE | `tests/acp/test_initialize.py` | Line 28, 51: `name="@mistralai/mistral-vibe", title="Mistral Vibe"` → `name="@blitzy/blitzy-agent", title="Blitzy Agent"`, Line 59: `"Register your API Key inside Mistral Vibe"` → `"... Blitzy Agent"`, Line 65: `"Mistral Vibe Setup"` → `"Blitzy Agent Setup"` |
-| `tests/onboarding/test_run_onboarding.py` | UPDATE | `tests/onboarding/test_run_onboarding.py` | Line 60: `"Mistral Vibe CLI"` → `"Blitzy Agent CLI"`, `"vibe"` → `"blitzy"` |
-| `tests/update_notifier/test_pypi_update_gateway.py` | UPDATE | `tests/update_notifier/test_pypi_update_gateway.py` | Lines 29, 60, 81, 105, 149: `project_name="mistral-vibe"` → `"blitzy-agent"`, Line 39: `"/simple/mistral-vibe/"` → `"/simple/blitzy-agent/"`, Lines 46, 49, 51, 74, 96: `"mistral_vibe-"` → `"blitzy_agent-"` in wheel filenames |
-| `tests/update_notifier/test_ui_update_notification.py` | UPDATE | `tests/update_notifier/test_ui_update_notification.py` | Lines 116, 210, 405: `"mistral-vibe"` → `"blitzy-agent"` in expected notification messages |
-
-### 0.5.2 Cross-File Dependencies
-
-**Import statement updates:** None required — all Python import paths remain unchanged since the `vibe/` package directory is preserved and no module or class names are altered.
-
-**Configuration updates for new structure:**
-- The `env_prefix` change in `vibe/core/config.py` from `VIBE_` to `BLITZY_` means any user currently setting `VIBE_ACTIVE_MODEL=devstral-2` will need to use `BLITZY_ACTIVE_MODEL=devstral-2`
-- The home directory change from `~/.vibe/` to `~/.blitzy/` means existing user configurations will need manual migration (existing `~/.vibe/config.toml` will not be auto-discovered)
-- The `VIBE_HOME` override environment variable changes to `BLITZY_HOME`
+```plaintext
+Select a session to resume:
+[1] a1b2c3d4  2026-04-22T10:14:03Z  anthropic   23 messages
+[2] f0e1d2c3  2026-04-21T18:02:55Z  blitzy      11 messages
+[3] 99887766  2026-04-20T09:31:10Z  mistral      5 messages
+>
+```
 
-**Test file impact:** Only assertion strings are updated to match the new brand values. No test imports, fixtures, mocking logic, or test structure changes are needed.
+- The list is sorted by `created_at` descending (most recent first).
+- Selecting `N` loads session N, restores its `messages`, and uses its `provider` to instantiate the backend — provider selection is skipped (rule 5).
+- When no sessions exist for the current `(repo, branch)`, the picker prints `"No previous sessions found for {repo}({branch}) — starting new session"` and the entrypoint falls through to the provider selection prompt.
 
-### 0.5.3 Wildcard Pattern Summary
+**Interactive API key prompt** (rendered when env and config are both absent for the chosen provider):
 
-All wildcard patterns use trailing patterns only:
-
-- `vibe/**/*.py` — scan all Python source files for user-facing brand strings
-- `vibe/core/prompts/*.md` — update prompt template branding
-- `tests/**/*.py` — update hardcoded brand strings in test assertions ONLY
-- `.github/ISSUE_TEMPLATE/*.yml` — update issue template brand references
-- `.github/workflows/*.yml` — update CI/CD workflow brand references
-- `docs/**/*.md` — update documentation brand references
-- `scripts/*` — update script brand references
-
-### 0.5.4 One-Phase Execution
-
-The entire refactor executes in ONE phase. All files listed above are modified simultaneously in a single pass. No multi-phase or staged rollout is required — this is a pure find-and-replace operation with theme color substitution, and all changes are independent at the code level (no file depends on the brand value of another file at import time).
-
-
-## 0.6 Dependency Inventory
-
-### 0.6.1 Key Packages
-
-All packages are existing dependencies — no new packages are added or removed. The versions below are taken directly from `pyproject.toml` and the installed environment.
-
-| Registry | Package | Version | Purpose |
-|---|---|---|---|
-| PyPI | `agent-client-protocol` | `==0.7.1` | ACP agent protocol for editor integration |
-| PyPI | `anyio` | `>=4.12.0` | Async I/O abstraction layer |
-| PyPI | `httpx` | `>=0.28.1` | HTTP client for API calls and update checks |
-| PyPI | `mcp` | `>=1.14.0` | MCP server integration |
-| PyPI | `mistralai` | `==1.9.11` | Mistral AI Python SDK (PRESERVED — external dependency) |
-| PyPI | `pexpect` | `>=4.9.0` | Terminal interaction |
-| PyPI | `packaging` | `>=24.1` | Version parsing for update notifier |
-| PyPI | `pydantic` | `>=2.12.4` | Data validation and settings management |
-| PyPI | `pydantic-settings` | `>=2.12.0` | Settings configuration with env var support |
-| PyPI | `pyyaml` | `>=6.0.0` | YAML parsing |
-| PyPI | `python-dotenv` | `>=1.0.0` | `.env` file loading |
-| PyPI | `rich` | `>=14.0.0` | Terminal formatting |
-| PyPI | `textual` | `>=1.0.0` | TUI framework for CLI interface |
-| PyPI | `tomli-w` | `>=1.2.0` | TOML writing for config persistence |
-| PyPI | `watchfiles` | `>=1.1.1` | File watching for auto-completion indexer |
-| PyPI | `pyperclip` | `>=1.11.0` | Clipboard integration |
-| PyPI | `textual-speedups` | `>=0.2.1` | Textual performance optimizations |
-| PyPI | `tree-sitter` | `>=0.25.2` | Code parsing |
-| PyPI | `tree-sitter-bash` | `>=0.25.1` | Bash grammar for tree-sitter |
-| PyPI | `hatchling` | build-time | Build backend |
-| PyPI | `hatch-vcs` | build-time | Version control integration for hatchling |
-| PyPI | `editables` | build-time | Editable install support |
-
-**Dev dependencies (from dependency-groups):**
-
-| Registry | Package | Version | Purpose |
-|---|---|---|---|
-| PyPI | `ruff` | `>=0.14.5` | Linter and formatter |
-| PyPI | `pyright` | `>=1.1.403` | Type checking |
-| PyPI | `pytest` | `>=8.3.5` | Test framework |
-| PyPI | `pytest-asyncio` | `>=1.2.0` | Async test support |
-| PyPI | `pytest-timeout` | `>=2.4.0` | Test timeout management |
-| PyPI | `pytest-textual-snapshot` | `>=1.1.0` | Textual UI snapshot testing |
-| PyPI | `pytest-xdist` | `>=3.8.0` | Parallel test execution |
-| PyPI | `respx` | `>=0.22.0` | HTTP mocking for httpx |
-| PyPI | `debugpy` | `>=1.8.19` | Debug adapter |
-
-### 0.6.2 Dependency Updates
-
-**No dependency additions or removals** are required for this rebranding exercise. All existing dependencies remain at their current versions.
-
-**Import Refactoring:** No import changes are needed since the `vibe/` package directory is preserved and no module names change.
-
-**External Reference Updates:**
-
-The following configuration and build files require brand string updates (not dependency changes):
-
-- `pyproject.toml` — project name, description, keywords, authors, URLs, script entry points (module paths remain unchanged: `vibe.cli.entrypoint:main`, `vibe.acp.entrypoint:main`)
-- `flake.nix` — description string, package reference
-- `action.yml` — GitHub Action metadata only (no dependency changes)
-- `.github/workflows/release.yml` — PyPI project reference and Zed extension name
-- `distribution/zed/extension.toml` — extension metadata and download URLs
+```plaintext
+{Provider} API key not found in environment or config.
+You can get one at: {help_url}
+Enter API key (or press Enter to abort):
+```
 
-### 0.6.3 Environment Variable Migration
-
-The `env_prefix` change from `VIBE_` to `BLITZY_` affects the following environment variables that users may have configured:
-
-| Old Variable | New Variable | Purpose |
-|---|---|---|
-| `VIBE_ACTIVE_MODEL` | `BLITZY_ACTIVE_MODEL` | Override active model |
-| `VIBE_HOME` | `BLITZY_HOME` | Override home directory location |
-| `VIBE_*` (any) | `BLITZY_*` | Any Pydantic settings override |
-
-**Preserved environment variables (NOT renamed):**
-- `MISTRAL_API_KEY` — external API credential, explicitly preserved
-- `DEBUG_MODE` — debugpy activation, not branded
-
-
-## 0.7 Refactoring Rules
-
-### 0.7.1 User-Specified Rules and Requirements
-
-The following rules are explicitly mandated by the user and must be enforced on every edit:
-
-- **Minimal Change Clause:** Every edit MUST be a direct brand string replacement or theme color change. No refactoring, no feature additions, no "while we're here" improvements
-- **Internal Python identifiers are immutable:** `VibeConfig`, `VibeApp`, `AgentLoop`, `VibeAcpAgentLoop`, and all other class/function/variable names MUST NOT be modified
-- **The `vibe/` package directory name is preserved:** The directory remains `vibe/`, not renamed to `blitzy/`
-- **Internal constants are preserved:** `VIBE_ROOT` (in `vibe/__init__.py`), `VIBE_STOP_EVENT_TAG`, `VIBE_WARNING_TAG` (in `vibe/core/utils.py`) MUST NOT be modified
-- **External Mistral API references are preserved:**
-  - Provider name `"mistral"` in config (refers to the Mistral API service, not the app)
-  - `MISTRAL_API_KEY` environment variable
-  - `api.mistral.ai` and `codestral.mistral.ai` endpoints
-  - The `mistralai` Python SDK package dependency
-  - `Mistral AI Studio` label in the onboarding API key screen (external service reference)
-- **LLM model names are preserved:** `mistral-vibe-cli-latest`, `devstral-2`, `devstral-small`, `devstral-small-latest` are model identifiers, not app branding
-- **All existing functionality must be preserved:** No behavioral changes to any tool, agent, middleware, backend, or protocol
-- **Config file format and session log format are unchanged**
-- **Test logic and test structure are unchanged:** Only assertion strings containing old branding are updated
-
-### 0.7.2 Special Instructions and Constraints
-
-**Disambiguation Protocol for "Mistral" References:**
-
-When encountering the word "Mistral" in the codebase, apply the following decision tree:
-
-- If the context refers to the **application brand** (e.g., "Mistral Vibe", "built by Mistral AI" in app description) → **REPLACE** with Blitzy equivalent
-- If the context refers to the **external Mistral API service** (e.g., `api.mistral.ai`, `MISTRAL_API_KEY`, `mistralai` SDK, provider `name="mistral"`, `Mistral AI Studio` console) → **PRESERVE** unchanged
-- If the context refers to a **model name** (e.g., `mistral-vibe-cli-latest`) → **PRESERVE** unchanged
-- If the context is in a **GitHub repository path** (e.g., `mistralai/mistral-vibe`) → **REPLACE** with `blitzy/blitzy-agent`
-
-**Theme Color Constraints:**
-
-- Primary accent `#5B39F3` is the anchor color — all derived colors must be cohesive with this purple
-- Semantic colors (error/warning/success) should be preserved from the existing theme unless they visually clash with the purple palette
-- The Textual CSS file (`app.tcss`) uses `$variable` tokens from the Textual theming system — the purple palette is injected through the `Theme` object, not hardcoded in CSS
-- The `WelcomeBanner` widget uses direct hex color strings for its gradient animation — these must be replaced with purple gradient values
-
-**Validation Framework (Automated Checks):**
-
-The following commands must pass after all changes are applied:
-
-- `grep -ri "mistral.vibe\|mistral-vibe\|Mistral Vibe" vibe/ tests/ docs/ *.md *.yml` returns zero matches (excluding lines containing `api.mistral.ai`, `codestral.mistral.ai`, `mistralai` SDK, or `MISTRAL_API_KEY`)
-- `grep -ri "Mistral AI" vibe/ tests/ docs/ *.md *.yml` returns zero matches (excluding lines referencing the external Mistral API provider configuration)
-- `uv run pytest` — all tests pass
-- `uv run ruff check` — zero lint errors
-- `uv run ruff format --check` — zero format violations
-- `blitzy --help` outputs help text containing "Blitzy Agent" and zero mentions of "Mistral Vibe"
-- `blitzy-acp` launches without error
-
-**Manual Verification Criteria:**
-
-- Welcome screen displays "Blitzy Agent" with purple-themed UI
-- Accent colors in TUI visually match `#5B39F3` purple palette
-- Commit signature reads `Blitzy Agent <agent@blitzy.com>`
-
-### 0.7.3 Boundary Edge Cases
-
-The following specific cases require careful handling:
-
-| Location | String | Decision | Rationale |
-|---|---|---|---|
-| `vibe/core/config.py:279` | `name="mistral-vibe-cli-latest"` | PRESERVE | This is a model name, not app branding |
-| `vibe/setup/onboarding/screens/api_key.py:21` | `"Mistral AI Studio"` | PRESERVE | Refers to the external API console |
-| `vibe/core/config.py:264-269` | `name="mistral"`, `api_base="https://api.mistral.ai/v1"` | PRESERVE | External API provider config |
-| `tests/conftest.py:27` | `"name": "mistral-vibe-cli-latest"` | PRESERVE | Model name in test config |
-| `tests/acp/test_acp.py:76` | `"mistral-vibe-cli-latest"` | PRESERVE | Model name assertion |
-| `vibe/core/utils.py:24` | `VIBE_STOP_EVENT_TAG` | PRESERVE | Internal constant |
-| `vibe/core/utils.py:25` | `VIBE_WARNING_TAG` | PRESERVE | Internal constant |
-| `vibe/__init__.py:5` | `VIBE_ROOT` | PRESERVE | Internal path constant |
-| `vibe/core/config.py:302` | `class VibeConfig` | PRESERVE | Internal class name |
-| `vibe/core/paths/global_paths.py:28` | `VIBE_HOME = GlobalPath(...)` | Variable name PRESERVE, but the resolver function must return `~/.blitzy` and check `BLITZY_HOME` env var | The Python variable name `VIBE_HOME` is an internal identifier, but the resolved path and env var it reads must change |
-
-
-## 0.8 References
-
-### 0.8.1 Files and Folders Searched
-
-The following files and folders were retrieved and analyzed to derive the conclusions in this Agent Action Plan:
-
-**Root-level files read:**
-- `pyproject.toml` — package metadata, dependencies, build config, scripts, tool config
-- `action.yml` — GitHub Action definition
-- `vibe-acp.spec` — PyInstaller spec for ACP binary
-- `flake.nix` — Nix flake definition (brand reference confirmed via grep)
-- `.python-version` — Python 3.12 confirmed
-- `.github/CODEOWNERS` — team ownership
-
-**Source code files read in full:**
-- `vibe/__init__.py` — `VIBE_ROOT` and `__version__` constants
-- `vibe/core/config.py` — `VibeConfig`, `SettingsConfigDict`, `env_prefix`, provider/model defaults
-- `vibe/core/system_prompt.py` — commit signature, system prompt assembly, `ProjectContextProvider`
-- `vibe/core/utils.py` — user-agent string, internal constants (`VIBE_STOP_EVENT_TAG`, `VIBE_WARNING_TAG`)
-- `vibe/core/paths/global_paths.py` — `_DEFAULT_VIBE_HOME`, `VIBE_HOME` env var, all global path definitions
-- `vibe/core/paths/config_paths.py` — local `.vibe/` config directory resolution
-- `vibe/core/prompts/cli.md` — CLI system prompt template
-- `vibe/core/prompts/tests.md` — test persona prompt
-- `vibe/cli/entrypoint.py` — CLI argparse description and trusted folder flow
-- `vibe/cli/cli.py` — CLI bootstrap, `Hello Vibe!` greeting, session loading
-- `vibe/cli/textual_ui/app.tcss` — complete Textual CSS stylesheet (1028 lines)
-- `vibe/cli/textual_ui/terminal_theme.py` — OSC terminal color probe, `Theme` construction
-- `vibe/cli/textual_ui/widgets/welcome.py` — `WelcomeBanner` widget, gradient colors, banner text
-- `vibe/cli/textual_ui/app.py` — `VibeApp` (targeted lines 1220-1265 for brand references)
-- `vibe/cli/update_notifier/update.py` — `UPDATE_COMMANDS` list (targeted line 125)
-- `vibe/cli/update_notifier/adapters/github_update_gateway.py` — User-Agent header (targeted line 34)
-- `vibe/acp/acp_agent_loop.py` — `VibeAcpAgentLoop`, ACP `Implementation` metadata, auth methods
-- `vibe/acp/entrypoint.py` — ACP CLI bootstrap, argparse description, history greeting
-- `vibe/whats_new.md` — release notes
-
-**Folders explored (with `get_source_folder_contents`):**
-- Root (`""`) — top-level structure
-- `vibe/` — package root
-- `vibe/core/` — core runtime modules
-- `vibe/core/prompts/` — prompt templates
-- `vibe/cli/` — CLI modules
-- `vibe/cli/textual_ui/` — Textual UI package
-- `vibe/cli/textual_ui/widgets/` — widget library
-- `vibe/acp/` — ACP layer
-- `tests/` — test suites
-
-**Grep searches conducted:**
-- `grep -rn "Mistral Vibe\|mistral-vibe\|Mistral AI\|mistral_vibe\|Mistral.Vibe\|vibe@mistral\|mistralai/mistral-vibe"` across all `*.py`, `*.md`, `*.toml`, `*.yml`, `*.yaml`, `*.spec`, `*.tcss` files
-- `grep -rn "VIBE_\|Hello Vibe\|~/.vibe\|\.vibe/"` across source files (excluding internal constants)
-- `grep -rn "Mistral Vibe\|mistral-vibe\|Mistral AI\|mistral_vibe\|vibe@mistral\|Hello Vibe"` specifically in `vibe/` and `tests/` Python files
-- `grep -rn "Mistral\|mistral\|Vibe\|vibe"` in `vibe/setup/` directory
-- `grep -rn "mistral-vibe\|Mistral Vibe\|Mistral AI\|mistral_vibe"` in `.github/`, `distribution/`, `scripts/`, and `docs/` directories
-- `find . -name "vibe-acp.spec"` and `find . -name "*.tcss"` for file discovery
-
-**Setup/onboarding files read via grep or bash:**
-- `vibe/setup/onboarding/__init__.py` — setup complete message
-- `vibe/setup/onboarding/screens/welcome.py` — `WELCOME_HIGHLIGHT` constant, animation logic
-- `vibe/setup/onboarding/screens/api_key.py` — API key screen branding (Mistral AI Studio preserved)
-- `vibe/setup/trusted_folders/trust_folder_dialog.py` — trust dialog message
-- `distribution/zed/extension.toml` — full Zed extension manifest
-- `scripts/install.sh`, `scripts/prepare_release.py` — release scripts (via grep)
-- `tests/conftest.py` — test configuration fixtures
-
-**Test files searched for brand strings:**
-- `tests/acp/test_initialize.py` — ACP initialization assertions
-- `tests/acp/test_acp.py` — model name check (preserved)
-- `tests/onboarding/test_run_onboarding.py` — onboarding message assertion
-- `tests/update_notifier/test_pypi_update_gateway.py` — PyPI project name assertions
-- `tests/update_notifier/test_ui_update_notification.py` — update notification assertions
-
-**Tech spec sections retrieved:**
-- Section 1.1 EXECUTIVE SUMMARY — project overview and context
-
-### 0.8.2 Attachments
-
-No attachments were provided for this project. No Figma URLs or external design files were referenced.
-
-### 0.8.3 External References
-
-No web searches were required for this rebranding task. The brand mapping is fully specified by the user, and the purple color palette values (`#5B39F3`, `#7C5DF5`, `#4A2DD4`, `#8B7FC7`) are provided in the task specification. The Textual CSS theming system uses standard `$variable` tokens documented in the Textual framework.
+- Empty input → `MissingAPIKeyError(provider)`, agent exits without instantiating any backend (rule 10).
+- Non-empty input is validated by a length sanity check; on success the user is offered `Save to ~/.blitzy/config.toml? [y/N]` (default no). Save uses `tomli_w` to write the key into the file's top-level keys.
 
+## 0.7 Scope Boundaries
+
+This section defines the precise IN-SCOPE / OUT-OF-SCOPE perimeter of the delivery. Wildcards capture file groups; explicit paths capture individual modifications.
+
+### 0.7.1 Exhaustively In Scope
+
+**Source code — feature modules and extensions:**
+
+- `vibe/core/git_context.py` (CREATE)
+- `vibe/core/session.py` (CREATE)
+- `vibe/core/observability.py` (CREATE)
+- `vibe/core/llm/backend/blitzy.py` (CREATE)
+- `vibe/core/llm/api_key_prompt.py` (CREATE)
+- `vibe/core/llm/backend/anthropic_llm.py` (UPDATE — `__init__` key chain and `anthropic_model` consumption)
+- `vibe/core/llm/backend/factory.py` (UPDATE — `BACKEND_FACTORY` registration and string-to-enum helper)
+- `vibe/core/llm/exceptions.py` (UPDATE — add `BlitzyConnectionError`, `SessionNotFoundError`)
+- `vibe/core/config.py` (UPDATE — `Backend.BLITZY`, new fields, `ContextLimitsConfig`, extended `MissingAPIKeyError`)
+- `vibe/core/middleware.py` (UPDATE — parameterized `AutoCompactMiddleware`)
+- `vibe/cli/provider_picker.py` (CREATE)
+- `vibe/cli/session_picker.py` (CREATE)
+- `vibe/cli/entrypoint.py` (UPDATE — argparse + orchestration block)
+- `vibe/cli/cli.py` (UPDATE — `run_cli` signature and per-turn save hook)
+- `vibe/setup/onboarding/screens/api_key.py` (UPDATE — `PROVIDER_HELP` map additions)
+
+**Build / dependency manifest:**
+
+- `pyproject.toml` (REFERENCE — no version changes required; treated as IN SCOPE for the user-stated boundary even though no edits are anticipated)
+
+**Tests (all CREATE):**
+
+- `tests/test_git_context.py`
+- `tests/test_session_manager.py`
+- `tests/test_context_limits.py`
+- `tests/test_api_key_masking.py`
+- `tests/test_backend_conformance.py`
+- `tests/backend/test_blitzy_backend.py`
+- `tests/backend/test_anthropic_backend_extension.py`
+- `tests/cli/test_provider_selection.py`
+- `tests/cli/test_resume_flow.py`
+
+**Configuration paths affected (user-level, not committed to repo):**
+
+- `~/.blitzy/config.toml` — new optional fields (`blitzy_api_key`, `anthropic_api_key`, `mistral_api_key`, `anthropic_model`) and new optional table `[context_limits]`
+- `~/.blitzy/sessions/{repo_name}/{branch_name}/{session_id}.json` — new file family
+- `~/.blitzy/sessions/_unknown/_unknown/{session_id}.json` — fallback when git context is unavailable
+
+**Rule-mandated artifacts (all CREATE):**
+
+- `blitzy/llm-provider-selection-session-persistence.html` (Executive Presentation rule)
+- `docs/observability/dashboard.json` (Observability rule — dashboard template)
+- `vibe/core/observability.py` (Observability rule — structured logging with correlation IDs)
+
+**Test file wildcards covering the feature:**
+
+- `tests/test_git_context.py`, `tests/test_session_manager.py`, `tests/test_context_limits.py`, `tests/test_api_key_masking.py`, `tests/test_backend_conformance.py`
+- `tests/backend/test_*backend*.py` (the two new backend tests)
+- `tests/cli/test_provider_selection.py`, `tests/cli/test_resume_flow.py`
+
+### 0.7.2 Explicitly Out of Scope
+
+The following areas are explicitly excluded and MUST NOT be modified.
+
+- **Mistral backend** — `vibe/core/llm/backend/mistral.py` is preserved unchanged ("Mistral backend: untouched, preserved as-is.").
+- **Other LLM backends** — `vibe/core/llm/backend/generic.py` and `vibe/core/llm/backend/claude_code_llm.py` receive no modifications.
+- **LLM backend interface / protocol** — `vibe/core/llm/types.py` and any other protocol definition remain unmodified ("LLM backend interface/protocol: no modifications.").
+- **ACP layer** — `vibe/acp/**` receives no modifications ("ACP/MCP layers: no changes.").
+- **MCP integration** — `vibe/core/tools/mcp.py` and any MCP-related tooling are out of scope.
+- **Tool framework** — `vibe/core/tools/**` receives no modifications ("Tool system, skill system: no changes.").
+- **Skill system** — `vibe/skills/**` receives no modifications.
+- **Existing session subsystem** — `vibe/core/session/session_logger.py`, `vibe/core/session/session_loader.py`, `vibe/core/session/session_migration.py` are preserved unchanged. The new `vibe/core/session.py` module is a peer addition, not a replacement.
+- **Existing TUI layout** — `vibe/cli/textual_ui/**` receives no modifications beyond the new provider/session picker prompts which are stdin-based and do not interact with the Textual layout.
+- **Onboarding wizard** — `vibe/setup/onboarding/**` is preserved except for the `PROVIDER_HELP` map addition in `screens/api_key.py`.
+- **Existing config fields** — All current fields in `vibe/core/config.py` remain unchanged; the contract is "additive extension only".
+- **Repository documentation root** — `README.md` is out of scope (no feature-section addition required).
+- **Performance optimizations beyond feature requirements**.
+- **Refactoring of existing code unrelated to integration**.
+- **Additional features not specified in the prompt**.
+
+## 0.8 Rules for Feature Addition
+
+This section captures every user-emphasized rule that constrains how the feature must be built. Each behavioral rule is preserved verbatim from the user prompt and mapped to the file(s) and test(s) that satisfy it.
+
+### 0.8.1 Behavioral Implementation Rules (verbatim from user prompt)
+
+1. **All three backends MUST implement the identical interface in `vibe/core/llm/`; verified by isinstance/protocol conformance test for each.**
+   - Satisfied by: `BlitzyLLMBackend`, extended `AnthropicBackend`, and unmodified `MistralBackend` all conforming to `BackendLike` `[vibe/core/llm/types.py]`.
+   - Verified by: `tests/test_backend_conformance.py` (one parameterized case per backend).
+
+2. **`BLITZY_API_KEY`, `ANTHROPIC_API_KEY`, and `MISTRAL_API_KEY` values MUST NOT appear in any log line, exception message, or traceback; verified by asserting each value absent from captured log output in tests.**
+   - Satisfied by: `vibe/core/observability.py:KEY_MASK_FILTER` and `register_sensitive(value)`; sensitive values are registered immediately upon acquisition inside `vibe/core/llm/api_key_prompt.py:resolve_or_prompt`.
+   - Verified by: `tests/test_api_key_masking.py` (asserts each of the three values is absent from captured log records and serialized exception messages and tracebacks).
+
+3. **Git context detection MUST NOT raise exceptions when `.git` is absent; MUST return `("", "")` silently; verified by unit test in temp dir without `.git`.**
+   - Satisfied by: `vibe/core/git_context.py:detect` wraps all I/O in `try/except OSError`.
+   - Verified by: `tests/test_git_context.py::test_no_git_directory_returns_empty_tuple`.
+
+4. **Provider selection MUST be displayed before any backend is instantiated; verified by asserting no backend constructor is called if selection is cancelled.**
+   - Satisfied by: orchestration block in `vibe/cli/entrypoint.py` invokes `provider_picker.select_provider` (or session picker) before any factory call.
+   - Verified by: `tests/cli/test_provider_selection.py` patches every entry in `BACKEND_FACTORY` with a constructor-spy and asserts zero calls when the picker is cancelled (KeyboardInterrupt) or the API key is declined.
+
+5. **`--resume` MUST skip provider selection when a session is found and loaded; if no sessions exist, MUST fall through to provider selection without exiting; verified by tests for both paths.**
+   - Satisfied by: `vibe/cli/session_picker.py:select_session` returns `(SessionRecord, Backend)` (non-empty path) or `(None, None)` (empty path); the entrypoint branches on this tuple.
+   - Verified by: `tests/cli/test_resume_flow.py::test_resume_with_sessions_skips_provider_picker` and `tests/cli/test_resume_flow.py::test_resume_with_empty_list_falls_through_to_provider_picker`.
+
+6. **Session files MUST be written (full overwrite) after every turn and MUST be stored at `~/.blitzy/sessions/{repo_name}/{branch_name}/`; verified by unit test asserting file path and existence after one turn.**
+   - Satisfied by: `SessionManager.save` opens the target path in `"w"` mode and dumps the full record.
+   - Verified by: `tests/test_session_manager.py::test_save_writes_full_record_to_repo_branch_path`.
+
+7. **Auto-compaction MUST trigger when `len(json.dumps(messages)) // 4` exceeds 80% of the active provider's configured context limit; MUST replace compacted messages with a single system summary; MUST preserve the most recent messages verbatim; verified by unit test with mocked token counter.**
+   - Satisfied by: `SessionManager.compact` splits messages into oldest half / newest half, summarizes the oldest half via the active backend's `complete()`, replaces with one `Role.system` message, retains the newest half verbatim.
+   - Verified by: `tests/test_session_manager.py::test_compaction_replaces_oldest_half_with_system_summary` and `test_recent_messages_preserved_verbatim`.
+
+8. **Blitzy context-check HTTP 404 MUST set `connected = False` and MUST NOT raise `BlitzyConnectionError`; verified by mocked 404 unit test.**
+   - Satisfied by: `BlitzyLLMBackend.__aenter__` short-circuits on status 404 and sets `self.connected = False`.
+   - Verified by: `tests/backend/test_blitzy_backend.py::test_context_check_404_sets_connected_false_no_exception`.
+
+9. **`httpx` MUST be used for all Blitzy HTTP calls; `anthropic` SDK MUST be used for all Anthropic calls; no cross-library usage; verified by import assertions in each backend file.**
+   - Satisfied by: `vibe/core/llm/backend/blitzy.py` imports `httpx` only; `vibe/core/llm/backend/anthropic_llm.py` imports `anthropic` (and `httpx` only as the SDK transport, which is internal to the SDK and not used for the wire protocol).
+   - Verified by: `tests/backend/test_blitzy_backend.py::test_no_anthropic_import_in_blitzy_module` and `tests/backend/test_anthropic_backend_extension.py::test_anthropic_module_uses_sdk_not_raw_httpx_for_messages`.
+
+10. **`MissingAPIKeyError` MUST be raised and agent MUST exit if user declines interactive key entry; verified by test mocking declined input for each provider.**
+    - Satisfied by: `vibe/core/llm/api_key_prompt.py:resolve_or_prompt` raises `MissingAPIKeyError(provider)` on empty stdin input.
+    - Verified by: `tests/cli/test_provider_selection.py::test_declined_key_for_<provider>_raises_and_exits` (three parameterized cases).
+
+11. **Provider context limits MUST be read from `~/.blitzy/config.toml` `[context_limits]` table at startup, not hardcoded; fallback to defaults if key absent; verified by test overriding one limit via config and asserting compaction triggers at the overridden threshold.**
+    - Satisfied by: `ContextLimitsConfig` nested model on `VibeConfig`; defaults are `blitzy=128_000`, `mistral=32_000`, `anthropic=200_000`.
+    - Verified by: `tests/test_context_limits.py::test_override_blitzy_limit_triggers_compaction_at_overridden_threshold`.
+
+### 0.8.2 Validation Framework Rules (verbatim from user prompt — see §0.9 for the full restatement)
+
+- **Gate 1 — Interface Conformance:** see §0.9.1.
+- **Gate 2 — Config Propagation:** see §0.9.2.
+- **Gate 8 — Integration Sign-off:** see §0.9.3.
+- **Gate 9 — Wiring Verification:** see §0.9.4.
+- **Gate 10 — Test Execution:** see §0.9.5.
+- **Gate 12 — Config Propagation Tracing:** see §0.9.6.
+- **Gate 13 — Registration-Invocation Pairing:** see §0.9.7.
+
+### 0.8.3 Project Rules (user-specified, applied to this delivery)
+
+**Observability rule** — *Verbatim user requirement: "The application is not complete until it is observable. Ship observability with the initial implementation, not as a follow-up."* For this CLI tool, applied as:
+
+- Structured logging with per-session correlation IDs — `vibe/core/observability.py:correlation_id` ContextVar; JSON log records.
+- Distributed tracing across service boundaries — adapted to span context managers around `provider.connect`, `llm.complete`, `session.save`, `session.compact` (a CLI process boundary is the LLM HTTP call).
+- Metrics endpoint — adapted to an in-memory `metrics_snapshot()` accessor exposed by `observability.py`; the dashboard template documents how an operator queries these.
+- Health/readiness checks — adapted to `observability.is_ready()` (returns `True` once the backend `__aenter__` completes successfully).
+- Dashboard template — `docs/observability/dashboard.json` describes log queries, metric panels, and trace views.
+
+**Executive Presentation rule** — *Verbatim user requirement: "Every deliverable MUST include an executive summary as a single self-contained reveal.js HTML file…"* Applied as `blitzy/llm-provider-selection-session-persistence.html`, satisfying every sub-requirement in the rule:
+
+- 12–18 slides (target 16), four slide types (`slide-title`, `slide-divider`, default `Content`, `slide-closing`).
+- Every slide carries at least one non-text visual element (KPI cards, styled tables, Mermaid diagrams, or Lucide SVG icons).
+- Zero emoji; Lucide SVG icons only.
+- Blitzy brand identity: hero gradient `linear-gradient(68deg, #7A6DEC 15.56%, #5B39F3 62.74%, #4101DB 84.44%)` on the title slide; navy `#1A105F` closing slide; CSS custom properties match the canonical palette (`#5B39F3` primary, `#2D1C77` dark, `#94FAD5` teal accent, `#1A105F` navy, `#7A6DEC` / `#4101DB` gradient stops).
+- Typography: Inter (body, 400/500/600/700), Space Grotesk (display headings, 500/600/700), Fira Code (mono/eyebrows, 400/500), loaded via Google Fonts `<link>`.
+- Pinned CDN versions: reveal.js 5.1.0, Mermaid 11.4.0, Lucide 0.460.0.
+- reveal.js config: `hash: true`, `transition: 'slide'`, `controlsTutorial: false`, `width: 1920`, `height: 1080`.
+- Mermaid diagrams initialized with `startOnLoad: false`; `mermaid.run()` called on `ready` and every `slidechanged`; Lucide `lucide.createIcons()` called on the same events.
+- Slide ordering follows the convention: Title → Content (KPIs) → Content (architecture diagram) → alternating Section Dividers and Content for each major topic → Closing.
+
+### 0.8.4 Cross-Cutting Constraints
+
+- **Boundary directive:** all code changes are confined to `vibe/core/llm/`, `vibe/core/`, `vibe/cli/`, and `pyproject.toml`. (Test files under `tests/` and rule-mandated artifacts under `blitzy/` and `docs/observability/` are project artifacts outside this directive, treated as additive deliverables.)
+- **No subprocess for git context:** the new `git_context.py` reads `.git/HEAD` and `.git/config` directly to avoid dependency on a `git` binary being on `PATH` and to honor the "MUST NOT raise exceptions" contract.
+- **No cross-library wire calls:** Blitzy → `httpx` only; Anthropic → `anthropic` SDK only (rule 9).
+
+## 0.9 Validation Framework
+
+This section restates the user-specified validation gates and maps each gate to the file(s), test(s), and behavioral rule(s) that demonstrate compliance.
+
+### 0.9.1 Gate 1 — Interface Conformance
+
+*All three backends pass isinstance/protocol conformance test; all abstract methods implemented; one test per backend.*
+
+- **Verified by:** `tests/test_backend_conformance.py` — parameterized over `BACKEND_FACTORY.values()`; each backend is instantiated with a dummy `ProviderConfig`, entered via `async with`, and asserted to satisfy `isinstance(b, BackendLike)`.
+- **Covered backends:** `BlitzyLLMBackend`, `AnthropicBackend`, `MistralBackend`.
+- **Rule mapping:** Rule 1.
+
+### 0.9.2 Gate 2 — Config Propagation
+
+*`--provider blitzy|mistral|anthropic` instantiates correct backend via factory; `--resume` uses session's stored provider; API key resolution order tested for each provider; context limit override via config tested; all paths traced from CLI arg → factory → backend.*
+
+- **Verified by:** `tests/cli/test_provider_selection.py` (asserts `provider_string_to_backend("blitzy") == Backend.BLITZY` and the factory yields `BlitzyLLMBackend`; same for mistral, anthropic).
+- **Verified by:** `tests/cli/test_resume_flow.py::test_resume_restores_provider_from_session_record` — patches `SessionManager.list_sessions` to return a record with `provider="anthropic"` and asserts the entrypoint instantiates `AnthropicBackend` without invoking the provider picker.
+- **Verified by:** `tests/test_api_key_masking.py` parameterized cases for env-only, config-only, prompt-only key resolution (three states × three providers = 9 cases).
+- **Verified by:** `tests/test_context_limits.py::test_override_blitzy_limit_triggers_compaction_at_overridden_threshold`.
+- **Rule mapping:** Rules 4, 5, 11, 13.
+
+### 0.9.3 Gate 8 — Integration Sign-off
+
+*Integration tests for Blitzy (SSE stream, ≥1 content block yielded) and Anthropic (streaming response, ≥1 token yielded); both `@pytest.mark.integration`; skipped when respective API keys absent.*
+
+- **Verified by:** `tests/backend/test_blitzy_backend.py::test_integration_streams_at_least_one_content_block` decorated with `@pytest.mark.integration`; skipped via `pytest.importorskip` and `pytest.skip("BLITZY_API_KEY not set")` when the key is absent.
+- **Verified by:** `tests/backend/test_anthropic_backend_extension.py::test_integration_streams_at_least_one_token` decorated with `@pytest.mark.integration`; skipped when `ANTHROPIC_API_KEY` is absent.
+- **Rule mapping:** Rules 1, 9.
+
+### 0.9.4 Gate 9 — Wiring Verification
+
+*Each backend reachable from CLI entrypoint; provider selection → factory → backend traced; `--resume` path with session found and without session both traced to correct outcomes.*
+
+- **Verified by:** `tests/cli/test_provider_selection.py::test_entrypoint_path_<provider>` — invokes `entrypoint.main` with `--provider <name>` and asserts the corresponding backend constructor is called exactly once.
+- **Verified by:** `tests/cli/test_resume_flow.py::test_resume_with_sessions_skips_provider_picker` and `test_resume_with_empty_list_falls_through_to_provider_picker`.
+- **Rule mapping:** Rules 4, 5.
+
+### 0.9.5 Gate 10 — Test Execution
+
+*`pytest tests/` passes with zero failures and ≥80% line coverage for `vibe/core/git_context.py`, `vibe/core/llm/blitzy.py`, `vibe/core/llm/anthropic_backend.py`, `vibe/core/session.py`; tests cover: provider selection (all three, default Enter, `--provider` override, key prompt, declined key → exit), `--resume` (sessions found → picker, sessions empty → fallthrough, provider restored, no-`.git` path), session write-per-turn, auto-compaction trigger and summary replacement, configurable context limits, SSE field priority, Blitzy 404, API key masking for all three providers.*
+
+- **Coverage targets** (per the user's prompt; paths normalized to the actual repository layout):
+  - `vibe/core/git_context.py` — ≥80%
+  - `vibe/core/llm/backend/blitzy.py` (user spec path `vibe/core/llm/blitzy.py`) — ≥80%
+  - `vibe/core/llm/backend/anthropic_llm.py` modified portions (user spec path `vibe/core/llm/anthropic_backend.py`) — ≥80%
+  - `vibe/core/session.py` — ≥80%
+- **Test inventory** (cross-referenced with §0.3.3): provider selection in `tests/cli/test_provider_selection.py` (all three + default Enter + `--provider` override + key prompt + declined-key → exit); `--resume` flow in `tests/cli/test_resume_flow.py` (sessions found → picker, sessions empty → fallthrough, provider restored, no-`.git` path); write-per-turn and compaction in `tests/test_session_manager.py`; context limit override in `tests/test_context_limits.py`; SSE field priority and Blitzy 404 in `tests/backend/test_blitzy_backend.py`; API key masking in `tests/test_api_key_masking.py`.
+- **Execution command:** `uv run pytest tests/ --cov=vibe.core.git_context --cov=vibe.core.session --cov=vibe.core.llm.backend.blitzy --cov=vibe.core.llm.backend.anthropic_llm --cov-fail-under=80`.
+- **Rule mapping:** all 11 behavioral rules.
+
+### 0.9.6 Gate 12 — Config Propagation Tracing
+
+*All key fields and `[context_limits]` read at startup; resolution order tested end-to-end for each provider with all three source states.*
+
+- **Verified by:** `tests/test_api_key_masking.py` and `tests/cli/test_provider_selection.py` exercise the env → config → prompt resolution order for each provider with all three source states (each test parameterizes whether the key is present in env, present only in config, present only via prompt, or absent).
+- **Verified by:** `tests/test_context_limits.py` asserts that `~/.blitzy/config.toml` `[context_limits]` overrides flow into `AutoCompactMiddleware` and `SessionManager.compact`.
+- **Rule mapping:** Rules 2, 11.
+
+### 0.9.7 Gate 13 — Registration-Invocation Pairing
+
+*`"blitzy"`, `"mistral"`, `"anthropic"` in `factory.py` exactly match `--provider` accepted values, session `provider` field, and config key strings; no orphaned strings.*
+
+- **Verified by:** `tests/cli/test_provider_selection.py::test_provider_string_set_consistency` — asserts the four string sets are equal:
+  - argparse `choices=["blitzy","mistral","anthropic"]`,
+  - `provider_string_to_backend.keys()`,
+  - the union of `provider` values written by `SessionManager.save` for any session record produced by the agent,
+  - the suffix set of `*_api_key` fields on `VibeConfig` (`{"blitzy", "mistral", "anthropic"}`).
+- **Rule mapping:** Rule 13.
+
+### 0.9.8 Static Quality Gates (from Tech Spec §1.2 SYSTEM OVERVIEW)
+
+The repository-wide validation contract documented in the tech spec is preserved unchanged:
+
+- `uv run pytest` — zero failures.
+- `uv run ruff check` — zero violations.
+- `uv run ruff format --check` — zero diffs.
+
+All new files MUST pass these checks before the delivery is considered complete.
+
+## 0.10 References
+
+This section documents every source consulted to derive the conclusions in this Action Plan and lists every external attachment and Figma reference (or notes their absence).
+
+### 0.10.1 Inline Citation Catalog (repository sources)
+
+Every claim made in §0.1–§0.9 about the existing system is grounded in one of the following locators. Inferred claims (no direct source) are flagged inline where they appear.
+
+- `[pyproject.toml:project.dependencies]` — package manifest; existing pins for `anthropic>=0.100.0`, `httpx>=0.28.1`, `mistralai==1.9.11`, `pydantic>=2.12.4`, `pydantic-settings>=2.12.0`, `tomli-w>=1.2.0`, `rich>=14.0.0`, `python-dotenv>=1.0.0`.
+- `[pyproject.toml:project.name, project.version]` — `blitzy-agent` v0.1.0; Python `>=3.12`.
+- `[vibe/core/llm/types.py:L1-L120]` — `BackendLike` protocol definition (async `__aenter__/__aexit__`, `complete`, `complete_streaming`, `count_tokens`).
+- `[vibe/core/llm/exceptions.py:L1-L195]` — existing exception hierarchy; new exceptions appended here.
+- `[vibe/core/llm/backend/factory.py:L9-L14]` — current `BACKEND_FACTORY` dict.
+- `[vibe/core/llm/backend/anthropic_llm.py:L140-L170]` — `AnthropicBackend.__init__` with `os.getenv(self._provider.api_key_env_var)` key resolution and `anthropic.AsyncAnthropic` client construction.
+- `[vibe/core/llm/backend/anthropic_llm.py:AnthropicMapper.prepare_messages]` — Anthropic message-shape adapter (system block, tool_use, tool_result merging).
+- `[vibe/core/llm/backend/mistral.py]` — `MistralBackend` (REFERENCE only; preservation boundary).
+- `[vibe/core/llm/backend/generic.py]` — generic OpenAI-compatible backend (REFERENCE only).
+- `[vibe/core/llm/backend/claude_code_llm.py]` — Claude Code backend (REFERENCE only).
+- `[vibe/core/config.py:Backend]` — `Backend` `StrEnum` with `MISTRAL`, `GENERIC`, `ANTHROPIC`, `CLAUDE_CODE` (new `BLITZY` member added).
+- `[vibe/core/config.py:VibeConfig]` — Pydantic Settings with `env_prefix="BLITZY_"` and `auto_compact_threshold` default.
+- `[vibe/core/config.py:MissingAPIKeyError]` — existing signature `(env_key, provider_name)`; extended to support `(provider)` form.
+- `[vibe/core/config.py:DEFAULT_PROVIDERS]` — existing default `ProviderConfig` list for mistral and llamacpp.
+- `[vibe/core/middleware.py:L90-L130]` — `AutoCompactMiddleware(threshold)` and `ContextWarningMiddleware`.
+- `[vibe/core/agent_loop.py:L824]` — existing `compact()` orchestration (REFERENCE for summarization patterns).
+- `[vibe/core/session/session_logger.py:L75-L100]` — existing subprocess-based git context detection (REFERENCE; not modified).
+- `[vibe/cli/entrypoint.py:L134-L146]` — current `-c/--continue` + `--resume SESSION_ID` argparse mutually-exclusive group.
+- `[vibe/setup/onboarding/screens/api_key.py:PROVIDER_HELP]` — existing provider help URL map.
+- `[tests/backend/test_backend.py]` — existing backend conformance scaffolding using `respx` and iterating over `BACKEND_FACTORY`.
+
+### 0.10.2 External Sources (web research)
+
+The following external sources were consulted to verify model identifiers, SDK contracts, and protocol formats. All citations are to the exact pages enumerated by web search and used only as background research.
+
+- **Anthropic Claude Sonnet 4.6 announcement** — verifies that `claude-sonnet-4-6` is a current Anthropic Sonnet-class model snapshot, released February 17, 2026, with improved coding skills, default in claude.ai for Free and Pro plans. Source: `https://www.anthropic.com/news/claude-sonnet-4-6`.
+- **Anthropic Models overview (Claude API Docs)** — confirms model-ID convention: "Starting with the Claude 4.6 generation, model IDs use a dateless format that is also a pinned snapshot, not an evergreen pointer," making `claude-sonnet-4-6` a stable literal default. Source: `https://platform.claude.com/docs/en/about-claude/models/overview`.
+- **AWS Bedrock — Claude Sonnet 4.6 model card** — confirms `anthropic.claude-sonnet-4-6` model identifier and 1M token context window via beta header (informs the `anthropic=200_000` default; Anthropic-direct context is 200K outside the 1M beta). Source: `https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-anthropic-claude-sonnet-4-6.html`.
+- **Anthropic Python SDK streaming API** — `client.messages.stream()` already in use by the existing `AnthropicBackend.complete_streaming` (`[vibe/core/llm/backend/anthropic_llm.py]`); no new external research required, existing imports `import anthropic` confirm the SDK is available.
+- **`httpx` async SSE streaming** — `httpx.AsyncClient.stream()` is the established primitive for SSE consumption; the `data: {json}\n\n` framing is standard. (Standard library knowledge; no external citation required.)
+- **Git plumbing — `.git/HEAD` and `.git/config`** — `.git/HEAD` contains either `ref: refs/heads/<branch>` (attached) or a 40-char SHA (detached); `.git/config` is INI-formatted with section headers like `[remote "origin"]` and key-value lines `url = ...`. (Standard library knowledge; no external citation required.)
+
+### 0.10.3 User Attachments
+
+- **None.** The user provided zero attachments. The `/tmp/environments_files` directory (when present) is empty for this delivery.
+
+### 0.10.4 Figma References
+
+- **None.** The user provided zero Figma URLs and zero Figma frames. The Design System Compliance sub-section (and the entire Figma Design Analysis flow) is therefore not applicable to this delivery.
+
+### 0.10.5 Search Log Appendix
+
+The following folders and files were inspected during scope discovery. This appendix is provided for traceability of the analysis that produced this Action Plan.
+
+**Folders inspected:**
+
+- `/` (repository root)
+- `vibe/`
+- `vibe/core/`
+- `vibe/core/llm/`
+- `vibe/core/llm/backend/`
+- `vibe/cli/`
+- `vibe/cli/textual_ui/`
+- `vibe/core/session/`
+- `vibe/setup/`
+- `vibe/setup/onboarding/`
+- `vibe/setup/onboarding/screens/`
+- `tests/`
+- `tests/backend/`
+- `tests/cli/`
+- `tests/session/`
+
+**Files inspected (full read or summary):**
+
+- `pyproject.toml` — dependency manifest (full read).
+- `vibe/core/config.py` — `Backend`, `VibeConfig`, `ProviderConfig`, `MissingAPIKeyError`, `DEFAULT_PROVIDERS` (targeted reads).
+- `vibe/core/llm/backend/anthropic_llm.py` — `AnthropicBackend.__init__` and `AnthropicMapper.prepare_messages` (targeted reads).
+- `vibe/core/llm/backend/factory.py` — `BACKEND_FACTORY` dict (full read).
+- `vibe/core/llm/backend/mistral.py` — REFERENCE summary only (no modifications).
+- `vibe/core/llm/backend/generic.py` — REFERENCE summary only.
+- `vibe/core/llm/backend/claude_code_llm.py` — REFERENCE summary only.
+- `vibe/core/llm/types.py` — `BackendLike` protocol (full read).
+- `vibe/core/llm/exceptions.py` — exception hierarchy (full read).
+- `vibe/core/middleware.py` — `AutoCompactMiddleware`, `ContextWarningMiddleware` (targeted read at line 90 and 112).
+- `vibe/core/agent_loop.py` — `compact()` orchestration (targeted read at line 824).
+- `vibe/cli/entrypoint.py` — argparse construction (targeted read at lines 134-146).
+- `vibe/cli/cli.py` — `run_cli` orchestration (targeted read).
+- `vibe/core/session/session_logger.py` — subprocess-based git detection (targeted read at lines 75-100).
+- `vibe/core/session/session_loader.py` — session loader (REFERENCE summary).
+- `vibe/setup/onboarding/screens/api_key.py` — `PROVIDER_HELP` map (targeted read).
+- Tech spec section `1.2 SYSTEM OVERVIEW` — system context and validation contract.
+- Tech spec section `2.1 FEATURE CATALOG` — feature inventory F-001…F-020.
+
+**`.blitzyignore` files inspected:** none present in the repository (verified by `find . -name .blitzyignore` returning no matches). All files were therefore available for inspection.
 
