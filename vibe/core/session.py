@@ -65,6 +65,7 @@ import uuid
 from pydantic import BaseModel, ConfigDict
 
 from vibe.core.llm.exceptions import SessionNotFoundError
+from vibe.core.observability import span
 from vibe.core.types import LLMMessage, Role
 
 # ---------------------------------------------------------------------------
@@ -286,6 +287,13 @@ class SessionManager:
         affect the JSON shape and is recovered transparently by
         :meth:`load` and :meth:`list_sessions`.
 
+        AAP observability rule + ``docs/observability/dashboard.json``: the
+        ``session.save`` span name is dashboard-required ("Span breakdown
+        per session" trace view). The span is recorded around the directory
+        creation + write so operators can see per-turn save latency in the
+        dashboard. ``message_count`` and ``bytes_written`` are recorded as
+        attrs for payload-size triage.
+
         Args:
             session: The session record to persist.
 
@@ -293,11 +301,22 @@ class SessionManager:
             The absolute :class:`Path` written, useful for tests that assert
             on the on-disk layout.
         """
-        target = self._path_for(session.repo, session.branch, session.session_id)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        with target.open("w", encoding="utf-8") as f:
-            f.write(session.model_dump_json(indent=2))
-        return target
+        with span(
+            "session.save",
+            session_id=session.session_id,
+            provider=session.provider,
+            repo=session.repo,
+            branch=session.branch,
+        ) as span_attrs:
+            span_attrs["message_count"] = len(session.messages)
+            target = self._path_for(session.repo, session.branch, session.session_id)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            payload = session.model_dump_json(indent=2)
+            with target.open("w", encoding="utf-8") as f:
+                f.write(payload)
+            span_attrs["bytes_written"] = len(payload.encode("utf-8"))
+            span_attrs["outcome"] = "ok"
+            return target
 
     def load(self, session_id: str) -> SessionRecord:
         """Find and load the session record matching ``session_id``.
@@ -418,6 +437,15 @@ class SessionManager:
         and to enable expression-level chaining
         (``record = manager.compact(record, ...)``).
 
+        AAP observability rule + ``docs/observability/dashboard.json``: the
+        ``session.compact`` span name is dashboard-required ("Span breakdown
+        per session" trace view + "Compaction count" metric panel). The
+        span wraps the FULL compaction flow (threshold check, summarization
+        LLM call via ``complete_fn``, and message-list replacement) so the
+        recorded duration reflects the end-to-end compaction cost including
+        the embedded LLM round-trip. The ``compacted`` boolean attr
+        distinguishes triggered compactions from no-op fast-path returns.
+
         Args:
             session: The session record to compact (mutated in place).
             token_limit: The active provider's configured context limit in
@@ -433,35 +461,53 @@ class SessionManager:
         Returns:
             The (possibly mutated) :class:`SessionRecord`.
         """
-        threshold = 0.8 * token_limit
-        current = estimate_tokens(session.messages)
-        if current <= threshold:
+        with span(
+            "session.compact",
+            session_id=session.session_id,
+            provider=session.provider,
+            token_limit=token_limit,
+        ) as span_attrs:
+            threshold = 0.8 * token_limit
+            current = estimate_tokens(session.messages)
+            span_attrs["estimated_tokens"] = current
+            span_attrs["threshold"] = threshold
+            span_attrs["message_count_before"] = len(session.messages)
+            if current <= threshold:
+                span_attrs["compacted"] = False
+                span_attrs["outcome"] = "below_threshold"
+                return session
+
+            midpoint = len(session.messages) // 2
+            if midpoint == 0:
+                # Zero or one message — nothing meaningful to compact.
+                span_attrs["compacted"] = False
+                span_attrs["outcome"] = "too_few_messages"
+                return session
+
+            oldest_half = session.messages[:midpoint]
+            newest_half = session.messages[midpoint:]
+
+            summarization_prompt = LLMMessage(
+                role=Role.system,
+                content=(
+                    "Summarize the following conversation in 200 words or less, "
+                    "preserving key facts, tool calls, and decisions. The summary "
+                    "will replace these messages in the conversation history."
+                ),
+            )
+            summary_text = complete_fn([summarization_prompt, *oldest_half])
+            summary_message = LLMMessage(role=Role.system, content=summary_text)
+
+            # Replace (rather than mutate-in-place via index assignment) so
+            # any external references to the OLD list are not silently
+            # corrupted.
+            session.messages = [summary_message, *newest_half]
+            session.compacted_summary = summary_text
+            span_attrs["compacted"] = True
+            span_attrs["message_count_after"] = len(session.messages)
+            span_attrs["summary_length"] = len(summary_text)
+            span_attrs["outcome"] = "ok"
             return session
-
-        midpoint = len(session.messages) // 2
-        if midpoint == 0:
-            # Zero or one message — nothing meaningful to compact.
-            return session
-
-        oldest_half = session.messages[:midpoint]
-        newest_half = session.messages[midpoint:]
-
-        summarization_prompt = LLMMessage(
-            role=Role.system,
-            content=(
-                "Summarize the following conversation in 200 words or less, "
-                "preserving key facts, tool calls, and decisions. The summary "
-                "will replace these messages in the conversation history."
-            ),
-        )
-        summary_text = complete_fn([summarization_prompt, *oldest_half])
-        summary_message = LLMMessage(role=Role.system, content=summary_text)
-
-        # Replace (rather than mutate-in-place via index assignment) so any
-        # external references to the OLD list are not silently corrupted.
-        session.messages = [summary_message, *newest_half]
-        session.compacted_summary = summary_text
-        return session
 
 
 # ---------------------------------------------------------------------------

@@ -257,8 +257,42 @@ def load_session(
 def _load_messages_from_previous_session(
     agent_loop: AgentLoop, loaded_messages: list[LLMMessage]
 ) -> None:
+    """Hydrate ``agent_loop.messages`` with previously persisted messages.
+
+    Two effects matter:
+
+    1. **History append.** ``loaded_messages`` (with system messages dropped —
+       :class:`AgentLoop` builds a fresh system prompt at construction time) is
+       extended onto :attr:`AgentLoop.messages` so the conversation resumes
+       where it left off.
+    2. **Observer high-watermark advance** (AAP §0.6.1 Group 2 — "skips the
+       empty-session initialization"). :class:`AgentLoop` increments
+       ``_last_observed_message_index`` to ``1`` in its constructor when a
+       ``message_observer`` is supplied, marking only the newly built system
+       message as "already observed". After we extend ``agent_loop.messages``
+       with the loaded history, the watermark is still ``1``, which would
+       cause :meth:`AgentLoop._flush_new_messages` on the FIRST post-resume
+       turn to re-emit observer notifications for every loaded message —
+       resulting in duplicate appends into ``session_record.messages`` and a
+       corrupt session file (AAP rule 6 violation in spirit).
+
+       To prevent the duplication we advance the watermark to the new end of
+       :attr:`AgentLoop.messages`, declaring the loaded history as
+       "already observed". Subsequent flushes will only emit observer
+       notifications for messages produced by the current run.
+
+    This helper is intentionally in-scope (``vibe/cli/cli.py``) rather than
+    modifying :class:`AgentLoop` itself, which lies outside the boundary
+    directive (``vibe/core/llm/``, ``vibe/core/``, ``vibe/cli/``,
+    ``pyproject.toml``). The two-line ``_last_observed_message_index``
+    re-assignment is the minimal, surgical fix.
+    """
     non_system_messages = [msg for msg in loaded_messages if msg.role != Role.system]
     agent_loop.messages.extend(non_system_messages)
+    # AAP §0.6.1 Group 2 + Rule 6: declare every loaded historical message
+    # as already observed so :meth:`AgentLoop._flush_new_messages` will only
+    # emit observer notifications for messages produced by the current run.
+    agent_loop._last_observed_message_index = len(agent_loop.messages)
     logger.info("Loaded %d messages from previous session", len(non_system_messages))
 
 
@@ -373,6 +407,56 @@ def run_cli(
     backend: Backend | None = None,
     restored_session: SessionRecord | None = None,
 ) -> None:
+    """Top-level CLI orchestration entrypoint.
+
+    Resolves config, builds a :class:`SessionRecord` (rule 3 git context
+    detection — never raises), binds the per-session correlation ID, and
+    branches into one of two execution modes:
+
+    * **Interactive mode** (default — no ``--prompt``): wires the per-turn
+      session-save observer into :class:`AgentLoop` (AAP rule 6 — full
+      overwrite after every turn), installs the provider-aware
+      :class:`AutoCompactMiddleware` (AAP rule 11 — 80% of the active
+      provider's context limit), hydrates any restored conversation history,
+      and hands off to the Textual UI.
+
+    * **Programmatic mode** (``--prompt <text>``): runs the agent as a
+      one-shot batch (``run_programmatic``). **Programmatic mode does
+      INTENTIONALLY NOT persist session JSON** under
+      ``~/.blitzy/sessions/{repo}/{branch}/`` because (a) it is a one-shot
+      batch invocation where on-disk persistence has no resume target, and
+      (b) the AAP §0.5.5 per-turn save flow is specified for the interactive
+      Textual UI loop. The :class:`SessionRecord` is still built (for the
+      correlation ID binding at line below) but the
+      :func:`_make_message_observer` callback is NOT wired into the
+      programmatic path. Operators who need durable history for batch jobs
+      can pipe stdout through their own logging pipeline; this matches the
+      ergonomics of ``--prompt`` already in use.
+
+    Args:
+        args: Parsed CLI arguments from :mod:`argparse`. Notable fields:
+            ``prompt`` (programmatic-mode trigger), ``initial_prompt``
+            (interactive seed), ``continue_session`` /
+            ``resume`` (legacy session re-load flags), ``agent``
+            (initial agent name), ``setup`` (run onboarding wizard).
+        backend: Pre-resolved :class:`Backend` enum from the
+            ``--provider`` flag or the interactive provider picker
+            (entrypoint orchestration — see AAP §0.5.4). ``None`` falls
+            back to the model registry's default provider via
+            :meth:`AgentLoop._select_backend`.
+        restored_session: A :class:`SessionRecord` selected from the
+            ``--resume`` interactive picker. When supplied, the
+            conversation history is hydrated from
+            ``restored_session.messages`` (with the system message
+            dropped — :class:`AgentLoop` constructs a fresh one) and
+            provider selection is skipped (AAP rule 5). ``None`` for
+            fresh sessions.
+
+    Returns:
+        ``None``. Exits the process via :func:`sys.exit` on
+        :class:`KeyboardInterrupt`, :class:`EOFError`, missing prompt,
+        or runtime errors raised during programmatic execution.
+    """
     load_dotenv_values()
     bootstrap_config_files()
 

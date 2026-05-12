@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING
 import httpx
 
 from vibe.core.llm.exceptions import BlitzyConnectionError
-from vibe.core.observability import mark_ready
+from vibe.core.observability import mark_ready, span
 from vibe.core.types import AvailableTool, LLMChunk, LLMMessage, Role, StrToolChoice
 
 if TYPE_CHECKING:
@@ -206,32 +206,60 @@ class BlitzyLLMBackend:
         # error message rendered by users only references repo, branch,
         # status_code, and url (none of which contain the API key, per
         # AAP rule 2).
-        try:
-            response = await self._client.get(url, timeout=_CONTEXT_TIMEOUT_SECONDS)
-        except httpx.TimeoutException as exc:
-            raise BlitzyConnectionError(self._repo, self._branch, None, url) from exc
-        except httpx.RequestError as exc:
-            raise BlitzyConnectionError(self._repo, self._branch, None, url) from exc
+        #
+        # AAP observability rule + docs/observability/dashboard.json:
+        # the ``provider.connect`` span name is one of the four span names
+        # the dashboard "Span breakdown per session" trace view expects.
+        # We record it ALWAYS — even on raise — because the contextmanager
+        # in :func:`vibe.core.observability.span` records the duration on
+        # ``finally``, giving operators visibility into failed-handshake
+        # latency. The span attrs ``repo`` and ``branch`` are the dimensions
+        # operators slice on; ``status_code`` is filled in below as the
+        # ladder branches are walked.
+        with span(
+            "provider.connect", provider="blitzy", repo=self._repo, branch=self._branch
+        ) as span_attrs:
+            try:
+                response = await self._client.get(url, timeout=_CONTEXT_TIMEOUT_SECONDS)
+            except httpx.TimeoutException as exc:
+                span_attrs["status_code"] = None
+                span_attrs["outcome"] = "timeout"
+                raise BlitzyConnectionError(
+                    self._repo, self._branch, None, url
+                ) from exc
+            except httpx.RequestError as exc:
+                span_attrs["status_code"] = None
+                span_attrs["outcome"] = "request_error"
+                raise BlitzyConnectionError(
+                    self._repo, self._branch, None, url
+                ) from exc
 
-        if response.status_code == HTTPStatus.OK:
-            self.connected = True
-        elif response.status_code == HTTPStatus.NOT_FOUND:
-            # AAP rule 8: 404 on /context is NOT an error; the operator
-            # is simply running the agent against a repo+branch the Blitzy
-            # backend has no knowledge of. The agent continues to serve
-            # completions; only the "Connected to ..." UX message changes.
-            self.connected = False
-        else:
-            # Any other status (4xx other than 404, any 5xx) is a connection
-            # failure per AAP rule 8.
-            raise BlitzyConnectionError(
-                self._repo, self._branch, response.status_code, url
-            )
+            span_attrs["status_code"] = response.status_code
+            if response.status_code == HTTPStatus.OK:
+                self.connected = True
+                span_attrs["outcome"] = "connected"
+            elif response.status_code == HTTPStatus.NOT_FOUND:
+                # AAP rule 8: 404 on /context is NOT an error; the operator
+                # is simply running the agent against a repo+branch the
+                # Blitzy backend has no knowledge of. The agent continues
+                # to serve completions; only the "Connected to ..." UX
+                # message changes.
+                self.connected = False
+                span_attrs["outcome"] = "not_connected"
+            else:
+                # Any other status (4xx other than 404, any 5xx) is a
+                # connection failure per AAP rule 8.
+                span_attrs["outcome"] = "error"
+                raise BlitzyConnectionError(
+                    self._repo, self._branch, response.status_code, url
+                )
 
         # Signal readiness to the observability subsystem AFTER the context
         # check completes successfully (whether connected=True or
         # connected=False). Only timeouts / non-2xx-non-404 statuses skip
-        # this call -- they raise above.
+        # this call -- they raise above (the span is recorded before the
+        # exception propagates because the contextmanager finalizes on
+        # ``finally``).
         mark_ready()
         return self
 
@@ -383,37 +411,92 @@ class BlitzyLLMBackend:
                 k: v for k, v in extra_headers.items() if k.lower() != "x-api-key"
             })
 
-        # ``httpx.AsyncClient.stream`` is the async-context-manager streaming
-        # primitive. The ``json=`` kwarg serializes the body via the same
-        # JSON encoder used by ``httpx`` elsewhere and sets the request
-        # ``Content-Type`` automatically (we set it explicitly above for
-        # symmetry).
-        async with self._client.stream("POST", url, json=body, headers=headers) as resp:
-            if resp.status_code >= HTTPStatus.BAD_REQUEST:
-                # On any error during completion, raise BlitzyConnectionError.
-                # 404 on ``/v1/api/chat`` is unusual; we surface it as a
-                # connection error because the rule-8 exemption is specific
-                # to the context-check endpoint.
-                raise BlitzyConnectionError(
-                    self._repo, self._branch, resp.status_code, url
-                )
+        # AAP observability rule + docs/observability/dashboard.json:
+        # the ``llm.complete`` span name is dashboard-required ("P99 LLM
+        # latency by provider" metric panel slices on this span's
+        # duration histogram, partitioned by ``attrs.provider``). We
+        # record the span around the FULL streaming exchange (request,
+        # response framing, and chunk aggregation) so that the duration
+        # captures end-to-end completion time as the user experiences it.
+        # ``chunk_count`` and ``content_length`` are updated incrementally
+        # as the SSE parser yields content to give the dashboard a
+        # payload-size dimension for slow-response triage.
+        #
+        # The buffer-based SSE drain lives in :meth:`_parse_sse_stream` to
+        # keep this function within the project's ``max-nested-blocks=4``
+        # lint budget. The helper owns the inner ``async for / while / if``
+        # nesting; the caller owns the ``span / async with stream``
+        # framing.
+        with span("llm.complete", provider="blitzy") as span_attrs:
+            span_attrs["chunk_count"] = 0
+            span_attrs["content_length"] = 0
+            # ``httpx.AsyncClient.stream`` is the async-context-manager
+            # streaming primitive. The ``json=`` kwarg serializes the body
+            # via the same JSON encoder used by ``httpx`` elsewhere and
+            # sets the request ``Content-Type`` automatically (we set it
+            # explicitly above for symmetry).
+            async with self._client.stream(
+                "POST", url, json=body, headers=headers
+            ) as resp:
+                span_attrs["status_code"] = resp.status_code
+                if resp.status_code >= HTTPStatus.BAD_REQUEST:
+                    # On any error during completion, raise
+                    # BlitzyConnectionError. 404 on ``/v1/api/chat`` is
+                    # unusual; we surface it as a connection error because
+                    # the rule-8 exemption is specific to the context-check
+                    # endpoint.
+                    span_attrs["outcome"] = "error"
+                    raise BlitzyConnectionError(
+                        self._repo, self._branch, resp.status_code, url
+                    )
 
-            # SSE buffer-based parsing. ``aiter_bytes`` yields ``bytes``
-            # chunks of arbitrary size; we accumulate them and drain every
-            # complete ``\n\n``-terminated event. Partial events at the
-            # buffer tail wait for the next chunk.
-            buffer = b""
-            async for chunk in resp.aiter_bytes():
-                buffer += chunk
-                while b"\n\n" in buffer:
-                    # Split at the FIRST ``\n\n``, leaving the rest in
-                    # the buffer for the next iteration.
-                    raw_event, buffer = buffer.split(b"\n\n", 1)
-                    content = _parse_sse_event(raw_event)
-                    if content:
-                        yield LLMChunk(
-                            message=LLMMessage(role=Role.assistant, content=content)
-                        )
+                async for content in self._parse_sse_stream(resp):
+                    span_attrs["chunk_count"] += 1
+                    span_attrs["content_length"] += len(content)
+                    yield LLMChunk(
+                        message=LLMMessage(role=Role.assistant, content=content)
+                    )
+                span_attrs["outcome"] = "ok"
+
+    async def _parse_sse_stream(
+        self, resp: httpx.Response
+    ) -> AsyncGenerator[str, None]:
+        """Drain an SSE byte stream and yield assistant content strings.
+
+        This helper exists to keep :meth:`complete_streaming` within the
+        project-wide ``max-nested-blocks=4`` lint budget (Ruff ``PLR1702``).
+        By moving the ``async for chunk in resp.aiter_bytes() / while
+        b"\\n\\n" in buffer / if content`` nesting into a private async
+        generator, the caller's body shrinks to ``with span / async with
+        stream / async for content`` (depth 3), well within the budget.
+
+        Buffer-based parsing handles partial events that span
+        ``aiter_bytes`` boundaries: bytes are accumulated until a
+        ``\\n\\n`` separator is found, at which point the leading event
+        is drained and parsed while any trailing partial bytes wait for
+        the next chunk. Empty content (events that lack all four
+        priority fields, ``[DONE]`` sentinels, malformed JSON, and empty
+        events) is silently skipped per :func:`_parse_sse_event`.
+
+        Args:
+            resp: The open ``httpx.Response`` to drain. The caller owns
+                the ``async with self._client.stream(...) as resp:``
+                context manager; this helper only iterates its body.
+
+        Yields:
+            str: Non-empty assistant content extracted from each SSE
+                event in field-priority order.
+        """
+        buffer = b""
+        async for chunk in resp.aiter_bytes():
+            buffer += chunk
+            while b"\n\n" in buffer:
+                # Split at the FIRST ``\n\n``, leaving the rest in the
+                # buffer for the next iteration.
+                raw_event, buffer = buffer.split(b"\n\n", 1)
+                content = _parse_sse_event(raw_event)
+                if content:
+                    yield content
 
     async def complete(
         self,

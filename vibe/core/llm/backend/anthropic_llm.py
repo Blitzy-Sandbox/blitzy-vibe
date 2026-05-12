@@ -11,6 +11,7 @@ import httpx
 
 from vibe.core.llm.api_key_prompt import resolve_or_prompt
 from vibe.core.llm.exceptions import BackendErrorBuilder
+from vibe.core.observability import span
 from vibe.core.types import (
     AvailableTool,
     FunctionCall,
@@ -244,47 +245,66 @@ class AnthropicBackend:
             extra_headers=extra_headers,
         )
 
-        try:
-            response = await self._get_client().messages.create(**kwargs)
-            content, reasoning_content, tool_calls = self._mapper.parse_response(
-                response
-            )
-            return LLMChunk(
-                message=LLMMessage(
-                    role=Role.assistant,
-                    content=content,
-                    reasoning_content=reasoning_content,
-                    tool_calls=tool_calls,
-                ),
-                usage=LLMUsage(
-                    prompt_tokens=response.usage.input_tokens,
-                    completion_tokens=response.usage.output_tokens,
-                ),
-            )
+        # AAP observability rule + docs/observability/dashboard.json:
+        # the ``llm.complete`` span wraps the non-streaming completion as
+        # well, so the dashboard "P99 LLM latency by provider" panel
+        # captures latencies for BOTH ``complete()`` and
+        # ``complete_streaming()`` call paths. (``SessionManager.compact``
+        # invokes ``complete()`` for summarization — having the span here
+        # gives operators visibility into compaction latency.)
+        with span(
+            "llm.complete",
+            provider="anthropic",
+            model=kwargs.get("model"),
+            streaming=False,
+        ) as span_attrs:
+            try:
+                response = await self._get_client().messages.create(**kwargs)
+                content, reasoning_content, tool_calls = self._mapper.parse_response(
+                    response
+                )
+                span_attrs["outcome"] = "ok"
+                span_attrs["prompt_tokens"] = response.usage.input_tokens
+                span_attrs["completion_tokens"] = response.usage.output_tokens
+                return LLMChunk(
+                    message=LLMMessage(
+                        role=Role.assistant,
+                        content=content,
+                        reasoning_content=reasoning_content,
+                        tool_calls=tool_calls,
+                    ),
+                    usage=LLMUsage(
+                        prompt_tokens=response.usage.input_tokens,
+                        completion_tokens=response.usage.output_tokens,
+                    ),
+                )
 
-        except anthropic.APIStatusError as e:
-            raise BackendErrorBuilder.build_http_error(
-                provider=self._provider.name,
-                endpoint=self._provider.api_base,
-                response=e.response,
-                headers=e.response.headers,
-                model=model.name,
-                messages=messages,
-                temperature=temperature,
-                has_tools=bool(tools),
-                tool_choice=tool_choice,
-            ) from e
-        except (anthropic.APIConnectionError, httpx.RequestError) as e:
-            raise BackendErrorBuilder.build_request_error(
-                provider=self._provider.name,
-                endpoint=self._provider.api_base,
-                error=e,  # type: ignore[arg-type]
-                model=model.name,
-                messages=messages,
-                temperature=temperature,
-                has_tools=bool(tools),
-                tool_choice=tool_choice,
-            ) from e
+            except anthropic.APIStatusError as e:
+                span_attrs["outcome"] = "api_status_error"
+                span_attrs["status_code"] = getattr(e.response, "status_code", None)
+                raise BackendErrorBuilder.build_http_error(
+                    provider=self._provider.name,
+                    endpoint=self._provider.api_base,
+                    response=e.response,
+                    headers=e.response.headers,
+                    model=model.name,
+                    messages=messages,
+                    temperature=temperature,
+                    has_tools=bool(tools),
+                    tool_choice=tool_choice,
+                ) from e
+            except (anthropic.APIConnectionError, httpx.RequestError) as e:
+                span_attrs["outcome"] = "request_error"
+                raise BackendErrorBuilder.build_request_error(
+                    provider=self._provider.name,
+                    endpoint=self._provider.api_base,
+                    error=e,  # type: ignore[arg-type]
+                    model=model.name,
+                    messages=messages,
+                    temperature=temperature,
+                    has_tools=bool(tools),
+                    tool_choice=tool_choice,
+                ) from e
 
     def _on_content_block_start(
         self, event: object, current_tool_calls: dict[int, dict]
@@ -363,6 +383,58 @@ class AnthropicBackend:
             ]
         return []
 
+    async def _iter_anthropic_stream_chunks(
+        self, kwargs: dict, span_attrs: dict
+    ) -> AsyncGenerator[LLMChunk, None]:
+        """Open the Anthropic stream context manager and yield chunks.
+
+        This helper exists to keep :meth:`complete_streaming` within the
+        project-wide ``max-nested-blocks=4`` lint budget (Ruff ``PLR1702``).
+        By extracting the ``async with ... .messages.stream(**kwargs)``
+        context manager and the per-event dispatch loop into a separate
+        async generator, the caller's body shrinks to ``with span: try:
+        async for: yield`` (depth 3), well within the budget.
+
+        The helper updates ``span_attrs["prompt_tokens"]`` and
+        ``span_attrs["completion_tokens"]`` on the terminal ``message_delta``
+        event so the dashboard's token-utilization histograms have data.
+        ``chunk_count`` and ``outcome`` are owned by the caller because they
+        depend on whether the consumer actually iterates and whether an
+        exception terminates the stream.
+
+        Per-event dispatch reuses the existing :meth:`_on_content_block_start`
+        and :meth:`_on_content_block_delta` helpers — no behavioral change
+        to chunk shapes or ordering.
+        """
+        input_tokens = 0
+        # Maps stream block index -> {id, name, index (in tool_calls list)}
+        current_tool_calls: dict[int, dict] = {}
+
+        async with self._get_client().messages.stream(**kwargs) as stream:
+            async for event in stream:
+                chunks: list[LLMChunk] = []
+                if event.type == "message_start":
+                    input_tokens = event.message.usage.input_tokens
+                elif event.type == "content_block_start":
+                    chunks = self._on_content_block_start(event, current_tool_calls)
+                elif event.type == "content_block_delta":
+                    chunks = self._on_content_block_delta(event, current_tool_calls)
+                elif event.type == "message_delta":
+                    output_tokens = event.usage.output_tokens if event.usage else 0
+                    span_attrs["prompt_tokens"] = input_tokens
+                    span_attrs["completion_tokens"] = output_tokens
+                    chunks = [
+                        LLMChunk(
+                            message=LLMMessage(role=Role.assistant, content=""),
+                            usage=LLMUsage(
+                                prompt_tokens=input_tokens,
+                                completion_tokens=output_tokens,
+                            ),
+                        )
+                    ]
+                for chunk in chunks:
+                    yield chunk
+
     async def complete_streaming(
         self,
         *,
@@ -384,57 +456,65 @@ class AnthropicBackend:
             extra_headers=extra_headers,
         )
 
-        try:
-            input_tokens = 0
-            # Maps stream block index → {id, name, index (in tool_calls list)}
-            current_tool_calls: dict[int, dict] = {}
-
-            async with self._get_client().messages.stream(**kwargs) as stream:
-                async for event in stream:
-                    chunks: list[LLMChunk] = []
-                    if event.type == "message_start":
-                        input_tokens = event.message.usage.input_tokens
-                    elif event.type == "content_block_start":
-                        chunks = self._on_content_block_start(event, current_tool_calls)
-                    elif event.type == "content_block_delta":
-                        chunks = self._on_content_block_delta(event, current_tool_calls)
-                    elif event.type == "message_delta":
-                        output_tokens = event.usage.output_tokens if event.usage else 0
-                        chunks = [
-                            LLMChunk(
-                                message=LLMMessage(role=Role.assistant, content=""),
-                                usage=LLMUsage(
-                                    prompt_tokens=input_tokens,
-                                    completion_tokens=output_tokens,
-                                ),
-                            )
-                        ]
-                    for chunk in chunks:
-                        yield chunk
-
-        except anthropic.APIStatusError as e:
-            raise BackendErrorBuilder.build_http_error(
-                provider=self._provider.name,
-                endpoint=self._provider.api_base,
-                response=e.response,
-                headers=e.response.headers,
-                model=model.name,
-                messages=messages,
-                temperature=temperature,
-                has_tools=bool(tools),
-                tool_choice=tool_choice,
-            ) from e
-        except (anthropic.APIConnectionError, httpx.RequestError) as e:
-            raise BackendErrorBuilder.build_request_error(
-                provider=self._provider.name,
-                endpoint=self._provider.api_base,
-                error=e,  # type: ignore[arg-type]
-                model=model.name,
-                messages=messages,
-                temperature=temperature,
-                has_tools=bool(tools),
-                tool_choice=tool_choice,
-            ) from e
+        # AAP observability rule + docs/observability/dashboard.json:
+        # the ``llm.complete`` span name is dashboard-required ("P99 LLM
+        # latency by provider" metric panel slices on this span's duration
+        # histogram, partitioned by ``attrs.provider``). The span wraps the
+        # FULL streaming exchange (handshake, event loop, and chunk yield)
+        # so the recorded duration reflects end-to-end completion time as
+        # the user experiences it. ``chunk_count`` and the eventual token
+        # counts are updated incrementally so the dashboard has payload-size
+        # and token-utilization dimensions for triage.
+        #
+        # NOTE: The contextmanager around an async-generator body is the
+        # documented pattern in :mod:`contextlib` — the ``finally`` clause
+        # inside the ``contextmanager`` decorator fires on generator
+        # closure (including exception propagation, explicit ``aclose``,
+        # and natural exhaustion). The span is therefore always recorded
+        # exactly once per :meth:`complete_streaming` invocation.
+        #
+        # The stream context manager and per-event dispatch live in
+        # :meth:`_iter_anthropic_stream_chunks` to keep this function within
+        # the project's ``max-nested-blocks=4`` lint budget. ``span_attrs``
+        # is passed in so the helper can write token-count attributes
+        # directly without invalidating the contextmanager invariant.
+        with span(
+            "llm.complete", provider="anthropic", model=kwargs.get("model")
+        ) as span_attrs:
+            span_attrs["chunk_count"] = 0
+            try:
+                async for chunk in self._iter_anthropic_stream_chunks(
+                    kwargs, span_attrs
+                ):
+                    span_attrs["chunk_count"] += 1
+                    yield chunk
+                span_attrs["outcome"] = "ok"
+            except anthropic.APIStatusError as e:
+                span_attrs["outcome"] = "api_status_error"
+                span_attrs["status_code"] = getattr(e.response, "status_code", None)
+                raise BackendErrorBuilder.build_http_error(
+                    provider=self._provider.name,
+                    endpoint=self._provider.api_base,
+                    response=e.response,
+                    headers=e.response.headers,
+                    model=model.name,
+                    messages=messages,
+                    temperature=temperature,
+                    has_tools=bool(tools),
+                    tool_choice=tool_choice,
+                ) from e
+            except (anthropic.APIConnectionError, httpx.RequestError) as e:
+                span_attrs["outcome"] = "request_error"
+                raise BackendErrorBuilder.build_request_error(
+                    provider=self._provider.name,
+                    endpoint=self._provider.api_base,
+                    error=e,  # type: ignore[arg-type]
+                    model=model.name,
+                    messages=messages,
+                    temperature=temperature,
+                    has_tools=bool(tools),
+                    tool_choice=tool_choice,
+                ) from e
 
     async def count_tokens(
         self,
