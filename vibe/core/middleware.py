@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from vibe.core.agents import AgentProfile
 from vibe.core.agents.models import BuiltinAgentName
+from vibe.core.config import Backend, ContextLimitsConfig
 from vibe.core.utils import VIBE_WARNING_TAG
 
 if TYPE_CHECKING:
@@ -88,8 +89,59 @@ class PriceLimitMiddleware:
 
 
 class AutoCompactMiddleware:
-    def __init__(self, threshold: int) -> None:
-        self.threshold = threshold
+    """Middleware that triggers conversation compaction when token usage
+    crosses a configured threshold.
+
+    Two construction modes are supported:
+
+    1. **Legacy positional path** -- ``AutoCompactMiddleware(threshold)`` is
+       preserved verbatim because ``vibe/core/agent_loop.py`` still
+       instantiates the middleware with a fixed
+       ``self.config.auto_compact_threshold`` value. That call site is
+       out-of-scope for this delivery (AAP boundary directive); the new
+       signature MUST therefore keep ``threshold`` as a positional argument
+       with a ``None`` default that is only consulted when the new keyword
+       arguments are absent.
+    2. **Per-provider path** -- ``AutoCompactMiddleware(provider=...,
+       context_limits=...)`` derives the threshold as 80% of the active
+       provider's configured context-window limit (AAP rule 11). The
+       ``provider.value`` lookup on ``context_limits`` works because the
+       ``Backend`` ``StrEnum`` member values (``"blitzy"``, ``"mistral"``,
+       ``"anthropic"``) intentionally match the field names on
+       ``ContextLimitsConfig`` (AAP rule 13 -- no orphaned strings).
+    """
+
+    def __init__(
+        self,
+        threshold: int | None = None,
+        *,
+        provider: Backend | None = None,
+        context_limits: ContextLimitsConfig | None = None,
+    ) -> None:
+        if provider is not None and context_limits is not None:
+            # New path: per-provider 80% threshold (AAP rule 11). The
+            # ``Backend`` enum's ``.value`` (lowercase member name) matches a
+            # ``ContextLimitsConfig`` field exactly for the three supported
+            # providers (BLITZY, MISTRAL, ANTHROPIC). Passing an unsupported
+            # ``Backend`` value (e.g. GENERIC, CLAUDE_CODE) will raise
+            # ``AttributeError`` here -- callers in the new code path only
+            # ever pass one of the three supported providers.
+            limit = getattr(context_limits, provider.value)
+            # ``int(limit * 0.8)`` truncates the float result -- ``int()``
+            # rounds toward zero in Python, which matches the user-mandated
+            # "80%" semantics for positive integer limits.
+            self.threshold = int(limit * 0.8)
+            self._provider: Backend | None = provider
+        elif threshold is not None:
+            # Legacy path: fixed threshold (preserved for the existing
+            # ``vibe/core/agent_loop.py`` call site).
+            self.threshold = threshold
+            self._provider = None
+        else:
+            raise ValueError(
+                "AutoCompactMiddleware requires either a positional `threshold` "
+                "or both `provider` and `context_limits` keyword arguments"
+            )
 
     async def before_turn(self, context: ConversationContext) -> MiddlewareResult:
         if context.stats.context_tokens >= self.threshold:
@@ -98,6 +150,7 @@ class AutoCompactMiddleware:
                 metadata={
                     "old_tokens": context.stats.context_tokens,
                     "threshold": self.threshold,
+                    "provider": self._provider.value if self._provider else None,
                 },
             )
         return MiddlewareResult()
