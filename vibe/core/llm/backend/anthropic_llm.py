@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator
 import json
-import os
 import types
 from typing import TYPE_CHECKING
 from uuid import uuid4
@@ -10,6 +9,7 @@ from uuid import uuid4
 import anthropic
 import httpx
 
+from vibe.core.llm.api_key_prompt import resolve_or_prompt
 from vibe.core.llm.exceptions import BackendErrorBuilder
 from vibe.core.types import (
     AvailableTool,
@@ -23,7 +23,7 @@ from vibe.core.types import (
 )
 
 if TYPE_CHECKING:
-    from vibe.core.config import ModelConfig, ProviderConfig
+    from vibe.core.config import ModelConfig, ProviderConfig, VibeConfig
 
 
 class AnthropicMapper:
@@ -137,14 +137,32 @@ class AnthropicMapper:
 
 
 class AnthropicBackend:
-    def __init__(self, provider: ProviderConfig, timeout: float = 720.0) -> None:
+    def __init__(
+        self, provider: ProviderConfig, config: VibeConfig, timeout: float = 720.0
+    ) -> None:
         self._client: anthropic.AsyncAnthropic | None = None
         self._provider = provider
+        self._config = config
         self._mapper = AnthropicMapper()
-        self._api_key = (
-            os.getenv(self._provider.api_key_env_var)
-            if self._provider.api_key_env_var
-            else None
+        # API key resolution via the shared three-tier chain
+        # (env var -> VibeConfig field -> interactive getpass prompt).
+        # ``resolve_or_prompt`` registers the resolved value with the global
+        # ``KEY_MASK_FILTER`` for log scrubbing (AAP rule 2) and either
+        # returns a guaranteed non-empty string OR raises
+        # ``MissingAPIKeyError("anthropic")`` when the user declines the
+        # interactive prompt (AAP rule 10 -- the CLI entrypoint catches
+        # this and exits with a clear message).
+        #
+        # ``self._provider.api_key_env_var`` may be an empty string for
+        # exotic provider configurations; the ``or "ANTHROPIC_API_KEY"``
+        # fallback is a defensive default that matches the canonical
+        # Anthropic environment variable name. ``VibeConfig.anthropic_model``
+        # is consumed in ``_build_kwargs``/``count_tokens`` below.
+        self._api_key = resolve_or_prompt(
+            "anthropic",
+            self._provider.api_key_env_var or "ANTHROPIC_API_KEY",
+            "anthropic_api_key",
+            config,
         )
         self._timeout = timeout
 
@@ -184,8 +202,12 @@ class AnthropicBackend:
     ) -> tuple[str | None, list[dict], dict]:
         system, prepared_messages = self._mapper.prepare_messages(messages)
 
+        # The operator-selected ``VibeConfig.anthropic_model`` (default
+        # ``"claude-sonnet-4-6"``, verified per AAP section 0.10.2) takes
+        # precedence over the per-model registry name. The ``or model.name``
+        # fallback protects against an explicit empty-string override.
         kwargs: dict = {
-            "model": model.name,
+            "model": self._config.anthropic_model or model.name,
             "messages": prepared_messages,
             "temperature": temperature,
             "max_tokens": max_tokens or 16000,
@@ -434,7 +456,14 @@ class AnthropicBackend:
             extra_headers=extra_headers,
         )
 
-        count_kwargs: dict = {"model": model.name, "messages": prepared_messages}
+        # Use the SAME model identifier as ``_build_kwargs`` so the token
+        # count corresponds to the model actually used by ``complete`` /
+        # ``complete_streaming``. Mixing model identifiers between counting
+        # and completion would produce misleading usage numbers.
+        count_kwargs: dict = {
+            "model": self._config.anthropic_model or model.name,
+            "messages": prepared_messages,
+        }
         if system:
             count_kwargs["system"] = system
         if tools:
