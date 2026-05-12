@@ -143,7 +143,11 @@ def parse_arguments() -> argparse.Namespace:
         "--resume",
         action="store_true",
         help="Resume a previous session via the interactive session picker "
-        "(scoped to the current repository and branch).",
+        "(scoped to the current repository and branch). "
+        "BREAKING CHANGE: this flag NO LONGER accepts a SESSION_ID argument; "
+        "the picker selects the session interactively. "
+        "If no sessions exist for the current (repo, branch), execution "
+        "falls through to the provider selection prompt without exiting.",
     )
 
     # AAP Capability A (rule 13): the `--provider` flag is OUTSIDE the

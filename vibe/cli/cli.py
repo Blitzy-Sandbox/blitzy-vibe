@@ -29,10 +29,13 @@ from vibe.core.config import (
     Backend,
     MissingAPIKeyError,
     MissingPromptFileError,
+    ProviderConfig,
     VibeConfig,
     load_dotenv_values,
 )
 from vibe.core.git_context import detect as detect_git_context
+from vibe.core.llm.backend.factory import BACKEND_FACTORY
+from vibe.core.llm.types import BackendLike
 from vibe.core.middleware import AutoCompactMiddleware
 from vibe.core.observability import set_correlation_id
 from vibe.core.paths.config_paths import CONFIG_FILE, HISTORY_FILE
@@ -379,6 +382,176 @@ def _maybe_run_auto_bootstrap(args: argparse.Namespace) -> str | None:
     return "✓ Using cached environment"
 
 
+def _build_backend_instance(
+    backend: Backend | None, config: VibeConfig
+) -> BackendLike | None:
+    """Construct a :class:`BackendLike` from the user-selected ``Backend`` enum.
+
+    Resolves the orchestration gap identified in checkpoint review finding
+    C5-CRIT-01: the entrypoint correctly forwards ``backend=Backend.<X>`` to
+    :func:`run_cli`, but the previous implementation never propagated that
+    enum into :class:`AgentLoop`'s ``backend`` constructor parameter -- so
+    :meth:`AgentLoop._select_backend` was always invoked and dispatched the
+    LEGACY ``BACKEND_FACTORY[provider.backend](provider=provider,
+    timeout=timeout)`` call, which is INCOMPATIBLE with the new
+    :class:`BlitzyLLMBackend` and :class:`AnthropicBackend` constructor
+    signatures.
+
+    This helper closes the gap entirely within the in-scope ``cli.py``
+    boundary (AAP §0.7.1 UPDATE) without modifying :mod:`vibe.core.agent_loop`
+    (REFERENCE / preservation boundary). The constructed instance is then
+    passed via ``AgentLoop(..., backend=backend_instance)``, which makes
+    :class:`AgentLoop`'s pre-existing ``self.backend_factory = lambda:
+    backend or self._select_backend()`` (``agent_loop.py:L127``) short-circuit
+    to the supplied instance and BYPASS the legacy factory call site
+    (AAP §0.5.4 flow step Z: "Instantiate backend via factory" -- the
+    factory is now invoked in this helper, not inside ``AgentLoop``).
+
+    The factory lookup goes through :data:`BACKEND_FACTORY` (rather than
+    importing the backend classes directly) for two reasons:
+
+    1. It matches AAP §0.5.4's startup flow diagram exactly ("Z[Instantiate
+       backend via factory]"), keeping the factory as the SINGLE source of
+       truth for which class implements which backend.
+    2. The Rule 4 canonical test
+       ``test_no_backend_constructor_called_when_picker_cancelled``
+       (``tests/cli/test_provider_selection.py:L492``) patches every entry
+       in :data:`BACKEND_FACTORY` with :class:`MagicMock` spies and asserts
+       all ``call_count == 0`` when the picker is cancelled. Using the
+       factory dict here ensures that future production-mode tests
+       observing backend instantiation see the same call surface that
+       Rule 4 covers.
+
+    Per-backend dispatch:
+
+    * :attr:`Backend.BLITZY`: ``BlitzyLLMBackend(provider, config, *,
+      repo, branch)`` where ``(repo, branch)`` comes from
+      :func:`detect_git_context` (AAP rule 3 -- silent failure returns
+      ``("", "")`` which the backend forwards as URL parameters).
+    * :attr:`Backend.ANTHROPIC`: ``AnthropicBackend(provider, config,
+      timeout)`` with ``timeout=config.api_timeout``.
+    * :attr:`Backend.MISTRAL`: ``MistralBackend(provider, timeout)`` --
+      legacy two-arg signature preserved unchanged (AAP boundary directive:
+      "Mistral backend: untouched, preserved as-is").
+    * Any other enum value (programmatic callers, future additions):
+      returns ``None`` to delegate back to
+      :meth:`AgentLoop._select_backend`, preserving compatibility with
+      the existing :data:`BACKEND_FACTORY` entries that are not
+      user-selectable via ``--provider`` (Rule 13 restricts the
+      user-facing token set to ``{blitzy, mistral, anthropic}``).
+
+    Args:
+        backend: The :class:`Backend` enum resolved by the entrypoint's
+            orchestration block (from ``--provider``, the interactive
+            provider picker, or the restored session's ``provider``
+            field). ``None`` indicates the legacy path (``--setup``,
+            or future programmatic invocations that do not pass through
+            the picker); the caller is expected to fall through to
+            :meth:`AgentLoop._select_backend`.
+        config: The active :class:`VibeConfig` instance. Both the
+            provider lookup (``config.providers`` iteration) and the
+            timeout (``config.api_timeout``) come from this object.
+
+    Returns:
+        A ready-to-use :class:`BackendLike` instance (caller does NOT
+        need to ``__aenter__``; :class:`AgentLoop` handles the context
+        manager protocol around every LLM call site). Returns ``None``
+        when:
+
+        * ``backend`` is ``None`` (no enum to dispatch on), OR
+        * No :class:`ProviderConfig` in ``config.providers`` has
+          ``backend == backend`` (defensive: a misconfigured
+          ``~/.blitzy/config.toml`` could omit a provider entry), OR
+        * The enum is :attr:`Backend.GENERIC` or
+          :attr:`Backend.CLAUDE_CODE` (neither is user-selectable; the
+          legacy factory call inside :meth:`AgentLoop._select_backend`
+          still supports them via the original two-arg signature).
+
+    Raises:
+        MissingAPIKeyError: Propagated from the backend constructor's
+            internal :func:`resolve_or_prompt` call (AAP rule 10 -- the
+            user declined the interactive API key prompt). The CLI
+            entrypoint's outer ``except`` clause catches this and exits
+            with a clear error message.
+
+    Note:
+        The helper does NOT enter the backend's async context manager.
+        :class:`AgentLoop` uses ``async with self.backend as backend:``
+        inside every LLM call site (e.g.
+        ``agent_loop.py:L578, L625, L854``), so the same instance can
+        be entered repeatedly across turns -- :meth:`__aenter__` opens
+        a fresh HTTP client per turn and :meth:`__aexit__` closes it,
+        matching the existing per-call lifecycle.
+    """
+    if backend is None:
+        return None
+
+    # Locate the ProviderConfig whose ``backend`` field matches the enum.
+    # ``config.providers`` is the active provider list (defaults from
+    # ``DEFAULT_PROVIDERS`` unless overridden in ``~/.blitzy/config.toml``).
+    provider_config: ProviderConfig | None = None
+    for provider in config.providers:
+        if provider.backend == backend:
+            provider_config = provider
+            break
+
+    if provider_config is None:
+        # Defensive fallback: a malformed user config could omit a
+        # provider entry that the picker still admits. Logging at WARNING
+        # surfaces the misconfiguration without crashing; ``None`` here
+        # delegates backend selection to ``AgentLoop._select_backend``
+        # (which uses ``active_model.provider`` and the legacy signature).
+        logger.warning(
+            "No provider with backend=%r found in config.providers; "
+            "falling back to active-model provider selection. "
+            "Add a provider entry with backend=%r to ~/.blitzy/config.toml "
+            "to use --provider %s.",
+            backend.value,
+            backend.value,
+            backend.value,
+        )
+        return None
+
+    # Look up the backend class via the canonical factory. ``BACKEND_FACTORY``
+    # is the SINGLE source of truth (AAP §0.5.4 step Z) and test patches
+    # against this dict are observed at this call site (Rule 4 invariant).
+    backend_cls = BACKEND_FACTORY[backend]
+
+    # Per-backend signature dispatch. The three user-selectable backends
+    # (Rule 13) each have their own signature shape; the dispatch is
+    # explicit (rather than ``**kwargs`` magic) so static type checkers
+    # can verify the call shape and future readers can trace the contract.
+    if backend == Backend.BLITZY:
+        # BlitzyLLMBackend.__init__(provider, config, *, repo, branch).
+        # ``detect_git_context`` NEVER raises (rule 3 silent-failure
+        # contract); absent ``.git`` yields ``("", "")`` which the backend
+        # forwards as empty URL parameters (``/context?repo=&branch=``).
+        repo, branch = detect_git_context()
+        return backend_cls(provider_config, config, repo=repo, branch=branch)
+
+    if backend == Backend.ANTHROPIC:
+        # AnthropicBackend.__init__(provider, config, timeout=720.0).
+        # ``config.api_timeout`` is the existing configurable timeout
+        # (default 720.0s); matches the value formerly passed by
+        # ``AgentLoop._select_backend``.
+        return backend_cls(provider_config, config, config.api_timeout)
+
+    if backend == Backend.MISTRAL:
+        # MistralBackend.__init__(provider, timeout=720.0) -- legacy
+        # signature, preserved unchanged per AAP boundary directive
+        # ("Mistral backend: untouched, preserved as-is"). The backend
+        # does not consume ``config`` directly; its API key resolution
+        # remains env-var-only as in the pre-feature codebase.
+        return backend_cls(provider_config, config.api_timeout)
+
+    # Backend.GENERIC and Backend.CLAUDE_CODE are intentionally not
+    # dispatched here -- they are NOT user-selectable via ``--provider``
+    # (Rule 13), and their constructors still use the legacy two-arg
+    # ``(provider, timeout)`` signature served by
+    # ``AgentLoop._select_backend``. Returning ``None`` cleanly delegates.
+    return None
+
+
 def _make_message_observer(
     session_record: SessionRecord, session_manager: SessionManager
 ) -> Callable[[LLMMessage], None]:
@@ -483,6 +656,22 @@ def run_cli(
 
         loaded_messages = _resolve_loaded_messages(args, restored_session, config)
 
+        # --- AAP §0.5.4 step Z: Instantiate backend via factory ---------
+        # Construct the BackendLike instance from the resolved Backend enum
+        # BEFORE handing off to AgentLoop / run_programmatic. This closes
+        # checkpoint review finding C5-CRIT-01: without this step, AgentLoop's
+        # ``self.backend_factory = lambda: backend or self._select_backend()``
+        # (agent_loop.py:L127) would invoke the legacy factory signature
+        # ``BACKEND_FACTORY[provider.backend](provider=provider, timeout=...)``
+        # which is INCOMPATIBLE with the new ``BlitzyLLMBackend(provider,
+        # config, *, repo, branch)`` and ``AnthropicBackend(provider,
+        # config, timeout)`` signatures introduced by this feature delivery.
+        #
+        # The helper returns ``None`` for ``backend is None`` (legacy paths
+        # like setup-mode or callers that bypass the picker), which preserves
+        # the original ``AgentLoop._select_backend`` fallback behavior.
+        backend_instance = _build_backend_instance(backend, config)
+
         stdin_prompt = get_prompt_from_stdin()
         if args.prompt is not None:
             # Restore default SIGINT so Ctrl+C works in programmatic mode
@@ -507,6 +696,12 @@ def run_cli(
                     output_format=output_format,
                     previous_messages=loaded_messages,
                     agent_name=initial_agent_name,
+                    # AAP §0.5.4 step Z (C5-CRIT-01 fix): forward the
+                    # user-selected backend instance into the programmatic
+                    # path so ``vibe -p "..." --provider blitzy`` invokes
+                    # the correct backend at the LLM call site rather than
+                    # silently falling back to the active-model provider.
+                    backend=backend_instance,
                 )
                 if final_response:
                     print(final_response)
@@ -524,6 +719,15 @@ def run_cli(
                 config,
                 agent_name=initial_agent_name,
                 message_observer=on_message_added,
+                # AAP §0.5.4 step Z (C5-CRIT-01 fix): pass the user-selected
+                # backend instance so ``AgentLoop`` short-circuits its
+                # default ``_select_backend()`` (which would otherwise use
+                # the legacy two-arg signature incompatible with the new
+                # BlitzyLLMBackend / AnthropicBackend constructors). When
+                # ``backend_instance`` is None (legacy callers, --setup
+                # mode), AgentLoop falls back to ``_select_backend()`` as
+                # before -- preserving backward compatibility.
+                backend=backend_instance,
                 enable_streaming=True,
             )
 
