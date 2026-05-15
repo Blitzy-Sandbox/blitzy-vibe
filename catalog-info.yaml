@@ -8,8 +8,10 @@ metadata:
   - design
   - frontend
   - infrastructure
+  - migration
   - new-feature
   - python
+  - refactor
   labels:
     blitzy.com/language: python
   annotations:
